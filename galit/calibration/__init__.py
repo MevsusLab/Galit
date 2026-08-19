@@ -6,3 +6,4 @@ from .split import split_by_well, temporal_group_holdout
 from .calibrator import ParameterSet, calibrate_physical, calibrate_risk_policy
 from .metrics import coverage, regression_metrics, classification_metrics, ranking_metrics
 from .report import evaluate_parameter_set, write_report
+from .audit import audit_csv, write_markdown as write_audit_markdown
