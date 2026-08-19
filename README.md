@@ -148,20 +148,21 @@
 
 Нужен **Python 3.10+** (используются `X | Y` в аннотациях типов).
 
-```bash
-# ядру расчёта зависимости не нужны вообще
-python demo.py
-
-pip install matplotlib   # только для графиков
-pip install pytest       # только для тестов
-```
-
-В репозитории уже лежит готовое окружение `.venv` с обеими
-зависимостями. Проверка, что всё на месте:
+Расчётное ядро `galit/` использует только стандартную библиотеку. Интерфейсы и XLSX/графики ставятся из зафиксированных совместимых зависимостей:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/ -q
-# → 61 passed in 0.06s
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+# для разработки и тестов:
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+```
+
+Проверка окружения:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+# → 127 passed
+.\.venv\Scripts\python.exe -m compileall -q galit api.py dashboard.py telegram_bot.py calibration_cli.py
 ```
 
 > На Windows перед запуском полезно выставить
@@ -468,8 +469,7 @@ r = diagnose(case)
 - `"реакция"` → помогает ингибитор;
 - `"массоперенос"` → ингибитор поможет хуже, **надо снижать скорость потока**.
 
-**`wax_onset_m = None`** означает: весь ствол горячее WAT, парафин не
-кристаллизуется. Это нормальный результат, а не ошибка.
+**Semantics `wax_onset_m` и зоны АСПО:** глубина отсчитывается **от устья вниз**. Значение `500` означает, что холодная зона возможных отложений идёт от устья до 500 м (`0…500 м`), а не от 500 м до забоя. Если весь ствол холоднее WAT, onset равен глубине скважины и зона охватывает весь ствол. `wax_onset_m = None` означает, что весь ствол горячее WAT и отложений по модели нет. Это нормальный результат, а не ошибка.
 
 ---
 
@@ -568,13 +568,17 @@ galit/
   wellbore.py     T(z) по Ramey (1962), P(z) по Beggs-Brill (1973)
   wax.py          WAT(P), глубина начала АСПО, подбор технологии
   corrosion.py    de Waard-Milliams 1975 + resistance model 1995
-  integrated.py   ← ЯДРО: общая шкала, взаимодействие, ранжирование
+  integrated.py   ← ЯДРО: качество/provenance, RiskPolicy, сценарии,
+                  nodewise-коррозия, взаимодействие и ранжирование
+  calibration/    строгая схема истории, split, калибровка и отчёты
   economics.py    эффект с прослеживаемыми допущениями
   synthetic.py    генератор синтетического фонда (НЕ данные заказчика)
 
-tests/
-  test_validation.py    61 тест на контрольных точках из первоисточников
-
+tests/                  127 regression/API/dashboard/bot/calibration тестов
+api.py                  FastAPI, OpenAPI: /docs и /openapi.json
+dashboard.py            Streamlit-интерфейс CSV/XLSX
+telegram_bot.py         aiogram-интерфейс /aspo
+calibration_cli.py      offline calibration CLI
 demo.py                 сквозная демонстрация (4 раздела + графики)
 example_one_well.py     минимальный пример: своя скважина
 ```
@@ -705,10 +709,96 @@ print(f"TDS:         {case.water.tds_mg_l/1000:.0f} г/л")  # ожидаем 25
 
 ---
 
+## 14. Качество данных, сценарии и калибровка
+
+### Provenance и `production_mode`
+
+`DataProvenance` хранит источник каждого критичного поля: `measured`, `derived`, `default` или `synthetic`. `assess_quality()` возвращает полноту, класс A–D, причины и `production_ready`. Обычный `diagnose(case)` допускает screening и явно пишет предупреждение; `diagnose(case, production_mode=True)` отклоняет расчёт (`DataQualityError`), если хотя бы в критичной группе есть default/synthetic/missing значения. Dashboard имеет переключатель промышленного режима, API — query-параметр `production_mode=true`. Для промышленного решения нужны фактические данные по стволу/режиму, воде, WAT/парафину и CO₂/ингибитору.
+
+### `RiskPolicy` и сценарные интервалы
+
+`RiskPolicy` версионирует `policy_id`, `version`, четыре неотрицательных веса (сумма 1) и пороги warn/critical. Базовые веса — 0.30/0.15/0.30/0.25 для halite/calcite/wax/corrosion; это экспертный baseline, не результат промысловой калибровки. `UncertaintyConfig(seed=..., samples>=20)` включает воспроизводимый sensitivity ensemble. Результат содержит scenario-интервалы p05/p50/p95 для интегрального риска, механизмов и onset, а также вероятность отложений. Это **сценарные интервалы, не статистические доверительные интервалы**. В API: `include_uncertainty=true`, `uncertainty_seed`, `uncertainty_samples`.
+
+### Исправленные физические semantics
+
+- Кальцит считает screening-эффект сброса давления/дегазации CO₂: pH у устья не должен искусственно уменьшаться. Это ограниченная инженерная оценка, не полный карбонатный flash/speciation.
+- Коррозия считается nodewise на согласованных узлах `depths/T/P/PVT`; результат выбирает максимум и `depth_of_max_m`. При сужении весь профиль пересчитывается повторно, а не только одна условная точка.
+- Галит остаётся screening-моделью активности с оценочной погрешностью; для проектирования нужна строгая электролитная модель и реальные данные.
+
+### Точная схема calibration history
+
+Создайте CSV/XLSX командой ниже — это надёжнее ручного набора заголовков. Обязательные столбцы snapshot schema 1.0:
+
+```text
+schema_version, well_id, timestamp, source, quality,
+depth_m, tubing_id_m, inclination_deg, roughness_m,
+q_oil_m3d, q_water_m3d, gor_m3m3, gamma_oil, gamma_gas,
+salinity_ppm, surface_tension_n_m, t_surface_c,
+geothermal_grad_k_m, k_earth_w_mk, alpha_earth_m2_s,
+u_to_w_m2k, r_to_m, r_wb_m, cp_fluid_j_kgk, production_days,
+na_mg_l, cl_mg_l, ca_mg_l, mg_mg_l, k_mg_l, hco3_mg_l, so4_mg_l,
+ph, water_t_c, water_p_pa, wat_stock_tank_c, wax_content_pct,
+co2_mol_frac, inhibitor_efficiency, lift_type, p_wellhead_pa
+```
+
+Опциональные targets/metadata:
+
+```text
+target_temperature_c, target_pressure_pa, measurement_depth_m,
+target_wax_onset_m, target_corrosion_mm_y, event_label, risk_label,
+is_synthetic
+```
+
+`timestamp` обязан содержать timezone; `source` = `measured|derived|laboratory`, `quality` = `good|questionable|bad`. Единицы зашиты в имена полей. Строка — самостоятельный snapshot одной скважины в один момент времени; пары `(well_id,timestamp)` уникальны и упорядочены. Targets не используются как features (проверка leakage). XLSX использует лист `snapshots`; заготовлены также листы `observations`, `events`, `treatments`.
+
+### Что прислать завтра
+
+Лучше прислать заполненный XLSX, созданный первой командой, **без переименования колонок**. Минимально нужны несколько скважин и, по возможности, несколько дат на скважину; фактические входы из обязательной схемы; глубина замера `measurement_depth_m`; измеренные температура/давление; лабораторный WAT и парафин; полный ионный анализ с pH/T/P пробы; CO₂; режим и эффективность ингибирования; измеренная коррозия; фактический onset/интервал АСПО; события осложнений/обработок и `risk_label` по согласованной шкале. Укажите источник и качество каждой строки. Не заменяйте отсутствующие факты нулями: сначала согласуйте пропуск.
+
+```powershell
+# 1) шаблон для завтрашней таблицы
+.\.venv\Scripts\python.exe calibration_cli.py generate-template tomorrow-history.xlsx
+# пример отдельным файлом, только для понимания формата
+.\.venv\Scripts\python.exe calibration_cli.py generate-template synthetic-example.xlsx --example
+
+# 2) после заполнения
+.\.venv\Scripts\python.exe calibration_cli.py validate tomorrow-history.xlsx
+
+# 3) физическая калибровка thermal.u_to и независимая оценка
+.\.venv\Scripts\python.exe calibration_cli.py calibrate tomorrow-history.xlsx physical-params.json --kind physical --split group --method robust --seed 0
+.\.venv\Scripts\python.exe calibration_cli.py evaluate tomorrow-history.xlsx physical-params.json --json physical-report.json --markdown physical-report.md
+
+# 4) отдельно — калибровка весов RiskPolicy по risk_label
+.\.venv\Scripts\python.exe calibration_cli.py calibrate tomorrow-history.xlsx risk-policy.json --kind risk-policy --split group --seed 0
+```
+
+Физические параметры и risk-policy калибруются раздельно; split делается по скважинам (`group`) либо временным group holdout, без пересечения скважин. Synthetic smoke подтверждает только работоспособность pipeline и **не является свидетельством точности**.
+
+> **Честный статус:** ГАЛИТ не промышленно откалиброван до реальных данных. До получения и независимой проверки промысловой истории результаты являются screening/decision-support, а не основанием для автономного технологического решения.
+
+### Реальные оставшиеся ограничения
+
+1. Нет промысловой калибровки и внешней валидации; baseline-веса экспертные.
+2. Кальцит — screening дегазации + Stiff–Davis вне диапазона на сверхкрепких рассолах; не полный flash/Pitzer speciation.
+3. Галит — приближённая модель; WAT(P), теплообмен и blockage требуют site calibration.
+4. Коррозия — 1D steady screening без локальной геометрии, песка, H₂S, кислорода и истории плёнки/дозирования.
+5. Scenario p05/p50/p95 отражают заданные диапазоны чувствительности, а не доказанную вероятностную модель.
+6. Dashboard defaults и типовая вода бота пригодны только для screening; `production_mode` требует фактических критичных полей.
+
+---
+
 ## Воспроизведение
 
-```bash
-python -m pytest tests/ -q     # 61 passed
-python demo.py --plots         # полный расчёт + графики
-python example_one_well.py     # своя скважина
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q       # 127 passed
+.\.venv\Scripts\python.exe -m compileall -q galit api.py dashboard.py telegram_bot.py calibration_cli.py
+.\.venv\Scripts\python.exe demo.py --plots
+.\.venv\Scripts\python.exe example_one_well.py
+
+# Интерфейсы (каждая команда запускается отдельно; Ctrl+C для остановки)
+.\.venv\Scripts\python.exe -m streamlit run dashboard.py
+.\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
+$env:GALIT_BOT_TOKEN="<token>"; .\.venv\Scripts\python.exe telegram_bot.py
 ```
+
+API: `GET /api/v1/health`, `POST /api/v1/diagnose`; интерактивная схема — `http://127.0.0.1:8000/docs`. Бот требует сеть только при фактическом запуске polling; импорт, parsing и расчёт тестируются offline.

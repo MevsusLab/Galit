@@ -112,12 +112,51 @@ class TestDiagnoseEndpoint:
         assert body["wax_onset_m"] == pytest.approx(reference.wax_onset_m)
         assert body["recommendation"] == reference.recommendation
 
+    def test_legacy_contract_keeps_null_wax_onset(self):
+        no_wax = copy.deepcopy(WELL)
+        no_wax["wax"]["wat_stock_tank_c"] = -50.0
+        body = client.post("/api/v1/diagnose", json=no_wax).json()
+        assert set(body) == {
+            "integrated_risk", "dominant", "wax_onset_m",
+            "recommendation", "warnings",
+        }
+        assert body["wax_onset_m"] is None
+
+    def test_uncertainty_opt_in_adds_policy_and_intervals(self):
+        resp = client.post(
+            "/api/v1/diagnose?include_uncertainty=true&uncertainty_seed=7&uncertainty_samples=20",
+            json=WELL,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert {"policy", "uncertainty"} <= set(body)
+        assert body["policy"]["id"] == "galit-baseline"
+        assert body["uncertainty"]["seed"] == 7
+        assert body["uncertainty"]["samples"] == 20
+        assert set(body["uncertainty"]["integrated_risk"]) == {"p05", "p50", "p95"}
+
     def test_defaults_applied_when_optional_fields_omitted(self):
         minimal = copy.deepcopy(WELL)
         for key in ("co2_mol_frac", "inhibitor_efficiency", "lift_type", "p_wellhead_pa"):
             minimal.pop(key)
         resp = client.post("/api/v1/diagnose", json=minimal)
         assert resp.status_code == 200
+
+    def test_production_mode_rejects_omitted_critical_defaults_with_400(self):
+        minimal = copy.deepcopy(WELL)
+        minimal.pop("co2_mol_frac")
+        minimal.pop("inhibitor_efficiency")
+        resp = client.post("/api/v1/diagnose?production_mode=true", json=minimal)
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert isinstance(detail["reasons"], list)
+        assert "co2_mol_frac" in str(detail)
+
+    def test_production_mode_preserves_422_for_invalid_payload(self):
+        bad = copy.deepcopy(WELL)
+        del bad["thermal"]["u_to"]
+        resp = client.post("/api/v1/diagnose?production_mode=true", json=bad)
+        assert resp.status_code == 422
 
     def test_unknown_ion_rejected(self):
         bad = copy.deepcopy(WELL)

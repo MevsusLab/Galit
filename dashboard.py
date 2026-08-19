@@ -31,10 +31,13 @@ from pandas.io.formats.style import Styler
 import galit
 import galit.synthetic
 from galit import (
+    DataProvenance,
+    DataQualityError,
     DiagnosisResult,
     FluidProperties,
     ProductionRate,
     ThermalParams,
+    UncertaintyConfig,
     WaterAnalysis,
     WaxProperties,
     WellCase,
@@ -340,12 +343,14 @@ def frame_to_cases(df: pd.DataFrame) -> tuple[list[WellCase], list[str]]:
         label = str(name_raw).strip() if pd.notna(name_raw) else ""
         label = label or f"строка {i}"
         vals: dict[str, float | str] = {}
+        defaulted: set[str] = set()
         ok = True
 
         for canon, default in OPTIONAL_DEFAULTS.items():
             orig = by_canon.get(canon)
             if orig is None or pd.isna(row[orig]):
                 vals[canon] = default
+                defaulted.add(canon)
                 continue
             value = pd.to_numeric(row[orig], errors="coerce") \
                 if isinstance(default, float) else row[orig]
@@ -355,6 +360,7 @@ def frame_to_cases(df: pd.DataFrame) -> tuple[list[WellCase], list[str]]:
                     f"принято значение по умолчанию {default}"
                 )
                 vals[canon] = default
+                defaulted.add(canon)
             else:
                 vals[canon] = float(value) if isinstance(default, float) else str(value).strip()
 
@@ -379,11 +385,12 @@ def frame_to_cases(df: pd.DataFrame) -> tuple[list[WellCase], list[str]]:
             value = pd.to_numeric(row[orig], errors="coerce")
             if pd.notna(value) and value > 0.0:
                 ions[ion] = float(value)
-        if not ions:
+        typical_brine = not ions
+        if typical_brine:
             ions = dict(TYPICAL_BRINE)
 
         try:
-            cases.append(_row_to_case(label, vals, ions))
+            cases.append(_row_to_case(label, vals, ions, defaulted, typical_brine))
         except (ValueError, KeyError) as exc:
             errors.append(f"«{label}»: {exc} — строка пропущена")
 
@@ -391,7 +398,24 @@ def frame_to_cases(df: pd.DataFrame) -> tuple[list[WellCase], list[str]]:
 
 
 def _row_to_case(label: str, vals: dict[str, float | str],
-                 ions: dict[str, float]) -> WellCase:
+                 ions: dict[str, float], defaulted: set[str] | None = None,
+                 typical_brine: bool = False) -> WellCase:
+    defaulted = defaulted or set()
+    field_paths = {
+        "salinity_ppm": "fluid.salinity_ppm",
+        "t_surface_c": "thermal.t_surface_c",
+        "geothermal_grad": "thermal.geothermal_grad",
+        "u_to": "thermal.u_to",
+        "ph": "water.ph", "t_c": "water.t_c", "p_pa": "water.p_pa",
+        "wax_content_pct": "wax.wax_content_pct",
+        "co2_mol_frac": "co2_mol_frac",
+        "inhibitor_efficiency": "inhibitor_efficiency",
+        "p_wellhead_pa": "p_wellhead_pa",
+    }
+    sources = {field_paths[k]: "default" for k in defaulted if k in field_paths}
+    if typical_brine:
+        sources["water.ions_mg_l"] = "synthetic"
+    provenance = DataProvenance(sources=sources)
     return WellCase(
         name=label,
         geometry=WellGeometry(
@@ -429,6 +453,7 @@ def _row_to_case(label: str, vals: dict[str, float | str],
         inhibitor_efficiency=float(vals["inhibitor_efficiency"]),
         lift_type=str(vals["lift_type"]),
         p_wellhead_pa=float(vals["p_wellhead_pa"]),
+        provenance=provenance,
     )
 
 
@@ -496,9 +521,22 @@ def read_table(data: bytes, file_name: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner="Расчёт фонда…")
-def diagnose_frame(df: pd.DataFrame) -> tuple[list[DiagnosisResult], list[str]]:
+def diagnose_frame(
+    df: pd.DataFrame,
+    production_mode: bool = False,
+    include_uncertainty: bool = False,
+) -> tuple[list[DiagnosisResult], list[str]]:
     cases, errors = frame_to_cases(df)
-    return [diagnose(c) for c in cases], errors
+    results: list[DiagnosisResult] = []
+    config = UncertaintyConfig() if include_uncertainty else None
+    for case in cases:
+        try:
+            results.append(diagnose(
+                case, production_mode=production_mode, uncertainty=config
+            ))
+        except DataQualityError as exc:
+            errors.append(f"«{case.name}»: не ранжируется — {'; '.join(exc.reasons)}")
+    return results, errors
 
 
 @st.cache_data(show_spinner=False)
@@ -524,10 +562,18 @@ def rank_frame(results: list[DiagnosisResult]) -> pd.DataFrame:
     """Рейтинговая таблица фонда (сортировка по убыванию риска)."""
     rows = []
     for r in sorted(results, key=lambda x: x.integrated_risk, reverse=True):
+        risk_range = None
+        deposition_probability = None
+        if r.uncertainty is not None and r.uncertainty.integrated_risk is not None:
+            interval = r.uncertainty.integrated_risk
+            risk_range = f"{interval.p05:.2f}–{interval.p95:.2f}"
+            deposition_probability = r.uncertainty.probability_of_deposition
         rows.append({
             "№": len(rows) + 1,
             "Скважина": r.well,
             "Риск": r.integrated_risk,
+            "Сценарный диапазон риска": risk_range,
+            "Вероятность АСПО": deposition_probability,
             "Статус": risk_status(r.integrated_risk)[2],
             "Лидер": MECH_RU.get(r.dominant, r.dominant),
             "Галит": r.severity["halite"],
@@ -725,8 +771,9 @@ def render_welcome() -> None:
 
 
 def render_sidebar():
-    """Боковая панель; возвращает загруженный файл (или None)."""
+    """Боковая панель; возвращает файл и флаг промышленного режима."""
     upload = None
+    production_mode = False
     with st.sidebar:
         st.markdown(
             '<div class="sidebar-brand">ПО «ГАЛИТ»</div>'
@@ -773,8 +820,16 @@ def render_sidebar():
                 на единой шкале 0–1 с учётом их взаимодействия.
                 """
             )
+        production_mode = st.toggle(
+            "Промышленный режим",
+            help="Строки с default/synthetic critical inputs не ранжируются",
+        )
+        include_uncertainty = st.toggle(
+            "Сценарные интервалы неопределённости",
+            help="Воспроизводимый sensitivity ensemble; не калиброванный confidence interval",
+        )
         st.caption(f"ГАЛИТ v{galit.__version__} · расчёт выполняется локально")
-    return upload
+    return upload, production_mode, include_uncertainty
 
 
 def result_labels(results: list[DiagnosisResult]) -> list[tuple[str, DiagnosisResult]]:
@@ -800,7 +855,7 @@ def unique_labels(results: list[DiagnosisResult]) -> list[str]:
 
 
 def main() -> None:
-    upload = render_sidebar()
+    upload, production_mode, include_uncertainty = render_sidebar()
     render_header()
 
     # --- источник данных ---
@@ -812,7 +867,11 @@ def main() -> None:
         if df.empty:
             st.error("Файл не содержит данных.")
         else:
-            results, errors = diagnose_frame(df)
+            results, errors = diagnose_frame(
+                df,
+                production_mode=production_mode,
+                include_uncertainty=include_uncertainty,
+            )
             if not results:
                 st.error("Ни одна строка не распознана. Проверьте структуру файла "
                          "по шаблону из боковой панели.")

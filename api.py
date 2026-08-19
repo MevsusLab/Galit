@@ -28,9 +28,12 @@ from pydantic import BaseModel, Field, field_validator
 
 import galit
 from galit import (
+    DataProvenance,
+    DataQualityError,
     FluidProperties,
     ProductionRate,
     ThermalParams,
+    UncertaintyConfig,
     WaterAnalysis,
     WaxProperties,
     WellCase,
@@ -143,8 +146,26 @@ class WellCaseIn(BaseModel):
 # Модель ответа (зеркало DiagnosisResult)
 # --------------------------------------------------------------------------
 
+class IntervalOut(BaseModel):
+    p05: float | None
+    p50: float | None
+    p95: float | None
+
+
+class UncertaintyOut(BaseModel):
+    method: str
+    samples: int
+    seed: int
+    confidence_label: str
+    integrated_risk: IntervalOut
+    mechanisms: dict[str, IntervalOut]
+    wax_onset_m: IntervalOut
+    probability_of_deposition: float
+    warnings: list[str]
+
+
 class DiagnosisOut(BaseModel):
-    """Результат интегрированной диагностики."""
+    """Legacy-поля плюс opt-in сценарная неопределённость."""
 
     integrated_risk: float = Field(description="Интегральный риск, 0..1")
     dominant: str = Field(description="Доминирующий механизм: halite | calcite | wax | corrosion")
@@ -153,6 +174,8 @@ class DiagnosisOut(BaseModel):
     )
     recommendation: str = Field(description="Рекомендация по технологии")
     warnings: list[str] = Field(default_factory=list, description="Предупреждения расчёта")
+    policy: dict[str, object] | None = None
+    uncertainty: UncertaintyOut | None = None
 
 
 # --------------------------------------------------------------------------
@@ -168,7 +191,18 @@ app = FastAPI(
 
 
 def _to_well_case(payload: WellCaseIn) -> WellCase:
-    """Отображение JSON-модели в дата-классы ядра."""
+    """Отображение JSON-модели и автоматически выведенного provenance."""
+    sources: dict[str, str] = {}
+    optional_paths = {
+        "co2_mol_frac": "co2_mol_frac",
+        "inhibitor_efficiency": "inhibitor_efficiency",
+        "p_wellhead_pa": "p_wellhead_pa",
+    }
+    for api_field, core_path in optional_paths.items():
+        if api_field not in payload.model_fields_set:
+            sources[core_path] = "default"
+    if "wax_content_pct" not in payload.wax.model_fields_set:
+        sources["wax.wax_content_pct"] = "default"
     return WellCase(
         name=payload.name,
         geometry=WellGeometry(**payload.geometry.model_dump()),
@@ -181,6 +215,7 @@ def _to_well_case(payload: WellCaseIn) -> WellCase:
         inhibitor_efficiency=payload.inhibitor_efficiency,
         lift_type=payload.lift_type,
         p_wellhead_pa=payload.p_wellhead_pa,
+        provenance=DataProvenance(sources=sources),
     )
 
 
@@ -191,26 +226,56 @@ async def health() -> dict[str, str]:
 
 @app.post(
     "/api/v1/diagnose",
-    response_model=DiagnosisOut,
+    response_model=None,
     summary="Диагностика одной скважины",
 )
-async def diagnose_well(payload: WellCaseIn) -> DiagnosisOut:
-    """Принимает описание скважины, возвращает интегральный риск и рекомендацию."""
+async def diagnose_well(
+    payload: WellCaseIn,
+    production_mode: bool = False,
+    include_uncertainty: bool = False,
+    uncertainty_seed: int = 0,
+    uncertainty_samples: int = 100,
+) -> DiagnosisOut:
+    """По умолчанию точный legacy JSON; расширение включается явно."""
     case = _to_well_case(payload)
     try:
-        # расчёт CPU-bound: уводим в пул потоков, чтобы не блокировать event loop
-        result = await run_in_threadpool(diagnose, case)
+        config = UncertaintyConfig(seed=uncertainty_seed, samples=uncertainty_samples) \
+            if include_uncertainty else None
+        result = await run_in_threadpool(
+            diagnose, case, production_mode, None, config
+        )
+    except DataQualityError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "reasons": exc.reasons},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:  # например, непредвиденный неизвестный ион
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return DiagnosisOut(
+    output = DiagnosisOut(
         integrated_risk=result.integrated_risk,
         dominant=result.dominant,
         wax_onset_m=result.wax_onset_m,
         recommendation=result.recommendation,
         warnings=result.warnings,
     )
+    if include_uncertainty:
+        output.policy = {
+            "id": result.policy_id,
+            "version": result.policy_version,
+            "weights": result.mechanism_weights,
+        }
+        output.uncertainty = UncertaintyOut.model_validate(result.uncertainty, from_attributes=True)
+    if include_uncertainty:
+        return output.model_dump()  # type: ignore[return-value]
+    # Legacy contract has exactly five keys and keeps an explicit null onset.
+    return output.model_dump(
+        include={
+            "integrated_risk", "dominant", "wax_onset_m",
+            "recommendation", "warnings",
+        }
+    )  # type: ignore[return-value]
 
 
 if __name__ == "__main__":

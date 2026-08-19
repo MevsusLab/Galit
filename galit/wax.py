@@ -82,32 +82,33 @@ def wax_onset_depth(
     Ищет пересечение T_поток(z) и WAT(P(z)) сверху вниз.
     Возвращает (глубина или None, профиль WAT).
 
-    None означает, что весь ствол либо горячее WAT (отложений нет),
-    либо холоднее (отложения по всему стволу -- возвращается 0).
+    None означает отсутствие отложений (весь ствол теплее WAT).
+    Если весь ствол холоднее WAT, onset равен полной глубине: это сохраняет
+    семантику нижней границы зоны ``0 <= z <= onset`` и даёт полную зону.
     """
     wat_profile = [wat_at_pressure(wax, p, pb_pa) for p in pressures]
 
     delta = [t - w for t, w in zip(temps, wat_profile)]
-
-    # если на устье поток уже теплее WAT -- отложений нет нигде выше
-    if delta[0] > 0:
+    if not delta or not depths:
         return None, wat_profile
 
-    # ищем первую снизу вверх смену знака
-    onset = None
-    for i in range(len(delta) - 1, 0, -1):
-        if delta[i] > 0 >= delta[i - 1]:
-            # линейная интерполяция точки пересечения
+    if all(d > 0.0 for d in delta):
+        return None, wat_profile
+    if all(d <= 0.0 for d in delta):
+        return depths[-1], wat_profile
+
+    # Ищем нижнюю границу холодной приустьевой зоны, сверху вниз.
+    for i in range(1, len(delta)):
+        if delta[i - 1] <= 0.0 < delta[i]:
             d0, d1 = delta[i - 1], delta[i]
             z0, z1 = depths[i - 1], depths[i]
             frac = -d0 / (d1 - d0) if abs(d1 - d0) > 1e-12 else 0.0
-            onset = z0 + frac * (z1 - z0)
-            break
+            return z0 + frac * (z1 - z0), wat_profile
 
-    if onset is None and delta[-1] <= 0:
-        # весь ствол холоднее WAT
-        onset = 0.0
-    return onset, wat_profile
+    # Для немонотонного профиля консервативно берём самую глубокую
+    # холодную точку как нижнюю границу потенциальной зоны.
+    cold_depths = [z for z, d in zip(depths, delta) if d <= 0.0]
+    return max(cold_depths), wat_profile
 
 
 def wax_deposition_severity(
@@ -120,7 +121,7 @@ def wax_deposition_severity(
     """Безразмерная интенсивность отложений, 0..1.
 
     Учитывает три фактора:
-      * протяжённость зоны отложений (доля ствола выше onset);
+      * протяжённость зоны отложений (доля ствола от устья до onset);
       * средний температурный напор (T_wat - T_поток) в этой зоне --
         движущая сила кристаллизации;
       * содержание парафина в нефти.
@@ -128,7 +129,7 @@ def wax_deposition_severity(
     if onset_depth is None:
         return 0.0
     total = depths[-1] if depths else 1.0
-    zone_frac = max(0.0, min((total - onset_depth) / max(total, 1e-6), 1.0))
+    zone_frac = max(0.0, min(onset_depth / max(total, 1e-6), 1.0))
 
     driving = [
         max(w - t, 0.0)

@@ -7,7 +7,22 @@
 __version__ = "0.1.0"
 
 from .corrosion import CorrosionConditions, corrosion_rate_1995, corrosion_severity
-from .integrated import DiagnosisResult, WellCase, diagnose, rank_wells
+from .integrated import (
+    DataProvenance,
+    DataQuality,
+    DataQualityError,
+    DEFAULT_RISK_POLICY,
+    DiagnosisResult,
+    MECHANISM_WEIGHTS,
+    RiskPolicy,
+    ScenarioInterval,
+    UncertaintyConfig,
+    UncertaintyResult,
+    WellCase,
+    assess_quality,
+    diagnose,
+    rank_wells,
+)
 from .scale import WaterAnalysis, halite_saturation_index, stiff_davis_index
 from .wax import WaxProperties, wax_onset_depth
 from .wellbore import (
@@ -21,7 +36,16 @@ from .wellbore import (
 
 __all__ = [
     "CorrosionConditions",
+    "DataProvenance",
+    "DataQuality",
+    "DataQualityError",
+    "DEFAULT_RISK_POLICY",
     "DiagnosisResult",
+    "MECHANISM_WEIGHTS",
+    "RiskPolicy",
+    "ScenarioInterval",
+    "UncertaintyConfig",
+    "UncertaintyResult",
     "FluidProperties",
     "ProductionRate",
     "ThermalParams",
@@ -29,6 +53,7 @@ __all__ = [
     "WaxProperties",
     "WellCase",
     "WellGeometry",
+    "assess_quality",
     "corrosion_rate_1995",
     "corrosion_severity",
     "diagnose",

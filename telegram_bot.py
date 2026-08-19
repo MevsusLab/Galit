@@ -33,7 +33,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 
 import galit
-from galit import WellCase, diagnose
+from galit import DataProvenance, WellCase, diagnose
 from galit.wax import recommend_wax_treatment
 from galit.wellbore import (
     FluidProperties,
@@ -208,6 +208,21 @@ def build_case(params: dict[str, float | str]) -> WellCase:
         co2_mol_frac=float(merged["co2_mol_frac"]),
         lift_type=str(merged["lift_type"]),
         p_wellhead_pa=float(merged["p_wellhead_mpa"]) * 1e6,
+        provenance=DataProvenance(sources={
+            "water.ions_mg_l": "synthetic",
+            "water.ph": "default", "water.t_c": "default", "water.p_pa": "default",
+            "fluid.salinity_ppm": "default", "thermal.u_to": "default",
+            "inhibitor_efficiency": "default",
+            **{
+                path: "default" for key, path in {
+                    "t_surface_c": "thermal.t_surface_c",
+                    "geothermal_grad": "thermal.geothermal_grad",
+                    "wax_pct": "wax.wax_content_pct",
+                    "co2_mol_frac": "co2_mol_frac",
+                    "p_wellhead_mpa": "p_wellhead_pa",
+                }.items() if key not in params
+            },
+        }),
     )
 
 
@@ -229,6 +244,10 @@ def format_report(result: galit.DiagnosisResult, case: WellCase,
     e = html.escape
     lines = [
         f"Скважина: <b>{e(result.well)}</b>",
+        "<b>Режим: screening.</b> Типовая вода и значения по умолчанию "
+        "не являются промышленным прогнозом.",
+        f"Качество данных: {result.quality.grade} "
+        f"({result.quality.completeness:.0%})",
         "",
     ]
 
@@ -240,10 +259,10 @@ def format_report(result: galit.DiagnosisResult, case: WellCase,
     else:
         onset = result.wax_onset_m
         depth = case.geometry.depth_m
-        zone_pct = 100.0 * (depth - onset) / depth if depth else 0.0
+        zone_pct = 100.0 * onset / depth if depth else 0.0
         lines += [
             f"Глубина начала АСПО: <b>{onset:.0f} м</b> от устья",
-            f"Зона отложений: {onset:.0f} м — устье ({zone_pct:.0f} % ствола)",
+            f"Зона отложений: устье — {onset:.0f} м ({zone_pct:.0f} % ствола)",
         ]
 
     sev = result.severity["wax"]

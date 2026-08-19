@@ -404,6 +404,39 @@ def lsi_langelier(water: WaterAnalysis) -> tuple[float, str | None]:
     return water.ph - ph_s, warn
 
 
+def calcite_degas_ph_screening(
+    ph_initial: float,
+    t_c: float,
+    p_initial_pa: float,
+    p_local_pa: float,
+    co2_mol_frac: float,
+    max_ph_rise: float = 2.0,
+) -> tuple[float, str | None]:
+    """Ограниченная screening-оценка pH после декомпрессии и дегазации CO2.
+
+    Допущения: газ идеален, доля CO2 постоянна до равновесия, щёлочность
+    и буферные реакции не моделируются. Из ``[H+] ~ sqrt(K1*KH*pCO2)``
+    следует ``delta pH = 0.5*log10(pCO2_initial/pCO2_local)``. Температура
+    входит явно как локальное условие, но её влияние на K1 и KH сокращается
+    в отношении при одинаковой T. Рост ограничен ``max_ph_rise``; это
+    консервативный скрининг, не точный карбонатный speciation-расчёт.
+    """
+    if co2_mol_frac <= 0.0 or p_initial_pa <= p_local_pa:
+        return ph_initial, None
+
+    p_co2_initial = max(p_initial_pa * co2_mol_frac, 1.0)
+    p_co2_local = max(p_local_pa * co2_mol_frac, 1.0)
+    delta_ph = min(max(0.5 * math.log10(p_co2_initial / p_co2_local), 0.0),
+                   max(max_ph_rise, 0.0))
+    ph_local = min(max(ph_initial + delta_ph, 0.0), 14.0)
+    warning = (
+        f"pH={ph_local:.2f} при T={t_c:.1f} C оценён screening-моделью "
+        "дегазации CO2 (идеальный газ, без карбонатного speciation и "
+        "буферной ёмкости); не использовать как точный прогноз"
+    )
+    return ph_local, warning
+
+
 def scale_risk_profile(water: WaterAnalysis) -> dict[str, float]:
     """Сводка по обоим механизмам солеотложения."""
     si_halite = halite_saturation_index(water)

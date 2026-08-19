@@ -1,0 +1,11 @@
+# Runtime dependencies for the API, dashboard, bot, XLSX and plotting interfaces.
+# The calculation core in galit/ uses only the Python standard library.
+fastapi~=0.141.1
+uvicorn~=0.52.3
+pydantic~=2.13.4
+streamlit~=1.61.1
+pandas~=3.0.5
+plotly~=6.9.0
+openpyxl~=3.1.5
+aiogram~=3.30.0
+matplotlib~=3.11.1
