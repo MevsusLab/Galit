@@ -64,11 +64,11 @@ SURFACE = "#F6F8F7"     # фон панелей
 
 # Индикация статуса: норма / повышенный / критический
 STATUS_OK_BG = "#E8F3EC"
-STATUS_OK = "#2E7D32"
+STATUS_OK = "#246B2A"
 STATUS_WARN_BG = "#FBF3E4"
-STATUS_WARN = "#B26A00"
+STATUS_WARN = "#854D00"
 STATUS_CRIT_BG = "#FBE9E7"
-STATUS_CRIT = "#C62828"
+STATUS_CRIT = "#B71C1C"
 
 RISK_WARN = 0.35   # ниже -- норма
 RISK_CRIT = 0.60   # выше -- критический
@@ -223,6 +223,50 @@ def inject_css() -> None:
         }}
         .sidebar-hint {{ font-size: 12px; color: {INK_MUTED}; line-height: 1.45; }}
 
+        /* Streamlit/BaseWeb controls: explicit light surfaces survive host dark mode. */
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] span,
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] small,
+        section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {{
+            color: {INK_MUTED} !important;
+        }}
+        section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] label,
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] label p {{
+            color: {INK} !important; font-weight: 650;
+        }}
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {{
+            background: {SURFACE}; border: 1px dashed {GREEN_700};
+        }}
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {{
+            color: {INK} !important;
+        }}
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzoneInstructions"],
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzoneInstructions"] * {{
+            color: {INK_MUTED} !important;
+        }}
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {{
+            background: #FFFFFF; color: {GREEN_900}; border: 1px solid {GREEN_700};
+            font-weight: 650;
+        }}
+        div[data-baseweb="select"] > div,
+        div[data-baseweb="input"] > div,
+        div[data-baseweb="base-input"] {{
+            background: #FFFFFF !important; color: {INK} !important;
+            border-color: {BORDER} !important;
+        }}
+        div[data-baseweb="select"] *, input, textarea {{ color: {INK} !important; }}
+        div[role="listbox"], div[role="option"] {{
+            background: #FFFFFF !important; color: {INK} !important;
+        }}
+        div[data-testid="stExpander"] {{
+            background: #FFFFFF; color: {INK}; border-color: {BORDER};
+        }}
+        div[data-testid="stExpander"] summary *,
+        div[data-testid="stCheckbox"] label *,
+        [data-testid="stTooltipIcon"] {{ color: {INK} !important; }}
+
         /* ---------- кнопки ---------- */
         .stButton > button {{
             background: {GREEN_700}; color: #FFFFFF; border: none;
@@ -269,11 +313,30 @@ def inject_css() -> None:
             color: {INK}; font-weight: 700;
         }}
 
-        /* ---------- таблица и графики ---------- */
+        /* ---------- таблицы, canvas-grid и графики ---------- */
         div[data-testid="stDataFrame"] {{
+            background: #FFFFFF; color: {INK};
             border: 1px solid {BORDER}; border-radius: 6px;
         }}
+        div[data-testid="stDataFrame"] *,
+        div[data-testid="stDataFrame"] [role="columnheader"],
+        div[data-testid="stDataFrame"] [role="gridcell"],
+        div[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {{
+            color: {INK} !important;
+        }}
+        div[data-testid="stDataFrame"] button {{
+            background: #FFFFFF; color: {INK} !important;
+        }}
+        div[data-testid="stDataFrame"] canvas {{ background: #FFFFFF; }}
+        table, th, td {{ color: {INK}; border-color: {BORDER}; }}
+        th {{ background: {SURFACE}; font-weight: 700; }}
         .js-plotly-plot .plotly .modebar {{ background: transparent; }}
+
+        /* Alerts own their pale surfaces; force readable foreground in every variant. */
+        div[data-testid="stAlert"] {{ color: {INK}; }}
+        div[data-testid="stAlert"] p,
+        div[data-testid="stAlert"] li,
+        div[data-testid="stAlert"] span {{ color: {INK} !important; }}
 
         /* ---------- информационные блоки ---------- */
         .note-box {{
@@ -856,11 +919,11 @@ def style_rank(df: pd.DataFrame) -> Styler:
 
     def row_paint(row: pd.Series) -> list[str]:
         bg, fg, _ = risk_status(float(row["Риск"]))
-        styles = [f"background-color: {bg}" for _ in df.columns]
+        styles = [f"background-color: {bg}; color: {INK}" for _ in df.columns]
         risk_i = df.columns.get_loc("Риск")
-        styles[risk_i] = f"background-color: {fg}; color: #FFFFFF"
+        styles[risk_i] = f"background-color: {fg}; color: #FFFFFF; font-weight: 700"
         leader_i = df.columns.get_loc("Лидер")
-        styles[leader_i] = f"{styles[leader_i]}; color: {GREEN_900}"
+        styles[leader_i] = f"{styles[leader_i]}; color: {GREEN_900}; font-weight: 600"
         return styles
 
     return (

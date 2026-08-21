@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import io
 from dataclasses import replace
+from pathlib import Path
+import re
 
 import pandas as pd
 from pandas.io.formats.style import Styler
@@ -256,3 +258,60 @@ def test_pilot_dashboard_helpers():
     }], k=1)
     frame = dashboard.pilot_evaluation_frame(evaluation)
     assert len(frame) == 3 and "NDCG@K" in frame.columns
+
+
+# ------------------------------------------------ accessibility / contrast
+
+def _contrast_ratio(foreground: str, background: str) -> float:
+    def luminance(color: str) -> float:
+        channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+                  for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    light, dark = sorted((luminance(foreground), luminance(background)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def test_project_theme_is_explicit_accessible_light_theme():
+    config = Path(".streamlit/config.toml").read_text(encoding="utf-8")
+    expected = {
+        "base": "light",
+        "primaryColor": dashboard.GREEN_700,
+        "backgroundColor": "#FFFFFF",
+        "secondaryBackgroundColor": dashboard.SURFACE,
+        "textColor": dashboard.INK,
+    }
+    for key, value in expected.items():
+        assert re.search(rf'^{key}\s*=\s*"{re.escape(value)}"$', config, re.MULTILINE)
+    assert _contrast_ratio(dashboard.INK, "#FFFFFF") >= 7
+    assert _contrast_ratio(dashboard.INK_MUTED, "#FFFFFF") >= 4.5
+
+
+def test_dashboard_css_covers_accessibility_critical_streamlit_selectors():
+    source = Path("dashboard.py").read_text(encoding="utf-8")
+    selectors = (
+        'data-testid="stSidebar"', 'data-testid="stWidgetLabel"',
+        'data-testid="stFileUploaderDropzone"',
+        'data-testid="stFileUploaderDropzoneInstructions"',
+        'data-testid="stCaptionContainer"', 'data-testid="stCheckbox"',
+        'data-testid="stExpander"',
+        'data-testid="stTabs"', 'data-testid="stDataFrame"',
+        'data-baseweb="select"', 'data-baseweb="input"',
+        'data-testid="stAlert"', 'data-testid="stMetric"',
+    )
+    for selector in selectors:
+        assert selector in source
+
+
+def test_status_pairs_and_styler_foregrounds_meet_wcag():
+    for risk in (0.1, dashboard.RISK_WARN, dashboard.RISK_CRIT):
+        background, accent, _ = dashboard.risk_status(risk)
+        assert _contrast_ratio(dashboard.INK, background) >= 4.5
+        assert _contrast_ratio("#FFFFFF", accent) >= 4.5
+
+    results = [diagnose(c) for c in dashboard.galit.synthetic.make_fund(3)]
+    html = dashboard.style_rank(dashboard.rank_frame(results)).to_html()
+    assert f"color: {dashboard.INK}" in html
+    assert "color: #FFFFFF" in html
+    assert "#2E7D32" not in html and "#B26A00" not in html and "#C62828" not in html
