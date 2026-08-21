@@ -1,7 +1,7 @@
 # ГАЛИТ
 
-**Интегрированный прогноз осложнений в добывающих скважинах.**
-Галит, кальцит, АСПО и CO₂-коррозия — на одной шкале риска.
+**Поддержка решений для осложнённого фонда.**
+Галит, кальцит, АСПО и CO₂-коррозия — screening на одной шкале риска с trust gate.
 
 Прототип для конкурса «Марафон ИТ-стартапов – 2026» (РУП «ПО «Белоруснефть»).
 
@@ -25,6 +25,7 @@
 11. [Границы применимости](#11-границы-применимости--читать-обязательно)
 12. [Типичные ошибки](#12-типичные-ошибки-при-использовании)
 13. [Источники моделей](#13-источники-моделей)
+14. [Baseline-сравнение и измеримый пилот](#14-baseline-сравнение-и-измеримый-пилот)
 
 ---
 
@@ -80,7 +81,7 @@
 УСКОРЯЕТСЯ КОРРОЗИЯ
 ```
 
-На реальном примере из демо: 0,291 → 0,399 мм/год. **Рост на 37 %**,
+На versioned synthetic/scenario illustration из ранней версии демо: 0,291 → 0,399 мм/год. **Рост на 37 %**,
 который односвязная модель не увидит в принципе.
 
 **Технологии конфликтуют:**
@@ -179,9 +180,11 @@ python -m venv .venv
 Проверка окружения:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-# → 127 passed
-.\.venv\Scripts\python.exe -m compileall -q galit api.py dashboard.py telegram_bot.py calibration_cli.py
+.\run_demo.ps1
+# Запускает полный pytest, формирует evidence manifest и выполняет demo.
+# Актуальное число тестов записывается в reports/release-manifest.{json,md}.
+
+.\.venv\Scripts\python.exe -m compileall -q galit api.py dashboard.py telegram_bot.py calibration_cli.py release_manifest.py
 ```
 
 > На Windows перед запуском полезно выставить
@@ -214,6 +217,39 @@ python example_one_well.py
 
 Откройте [`example_one_well.py`](example_one_well.py), подставьте свои
 цифры — там каждое поле подписано с единицами измерения.
+
+### Вариант В: интеграционный API-прототип
+
+```powershell
+.\run_api.ps1
+```
+
+OpenAPI: `http://127.0.0.1:8000/docs`. Пример входа —
+`examples/sample-well.json`, локальная Postman collection —
+`postman/collections/GALIT API/`.
+
+Контракты: `GET /api/v1/health`, `GET /api/v1/readiness`,
+`POST /api/v1/diagnose`, `POST /api/v1/diagnose/bulk`. Bulk ограничен
+`GALIT_MAX_BATCH_SIZE` (по умолчанию 25), возвращает per-item success/error;
+превышение лимита — 413, невалидный envelope — 422. Расширенная metadata
+в single включается `include_metadata=true`, подробные профили — только
+`include_profiles=true`. Каждый ответ содержит `X-Request-ID`.
+
+CORS по умолчанию запрещён; разрешённые origin задаются явным списком
+`GALIT_CORS_ORIGINS=https://ui.example`. Wildcard запрещён. API не логирует
+payload, токены и тела запросов. Аутентификация/авторизация не реализованы и
+остаются roadmap — этот этап не делает заявлений production-ready.
+
+Однокомандный контейнерный запуск:
+
+```bash
+docker build -t galit-api .
+docker run --rm -p 8000:8000 galit-api
+```
+
+Контейнер работает non-root и имеет healthcheck; `.dockerignore` исключает
+`.env`, сырые `data`, `reports` и calibration artifacts. Если Docker недоступен,
+используйте `python -m compileall`, pytest и статические тесты упаковки.
 
 ---
 
@@ -537,42 +573,46 @@ from galit.integrated import MECHANISM_WEIGHTS
 
 ---
 
-## 9. Экономика
+## 9. Экономика пилота и break-even
+
+Главный расчёт — не обещание годового эффекта, а проверяемая окупаемость
+shadow-пилота. Стоимость пилота и ценность одной предотвращённой обработки,
+одного отказа, суток простоя и сохранённой тонны задаются только как явные
+`Assumption` с источником и confidence. Нулевой unit value допустим и означает,
+что канал отдельно не окупает пилот; отрицательные и non-finite значения
+отклоняются.
 
 ```python
 from galit.economics import (
-    default_assumptions, compute_effect, tornado,
-    scenario_bounds, unknowns,
+    Assumption, PilotOutcomeMix, PilotUnitEconomicsInput,
+    compute_pilot_break_even, pilot_sensitivity,
 )
 
-a = default_assumptions()          # 15 допущений, каждое с источником
-res = compute_effect(a)
-print(res.total)                   # BYN/год
-print(res.breakdown)               # по каналам эффекта
+# Заменить только на согласованные с заказчиком значения в одной валюте.
+def a(name, value, unit):
+    return Assumption(name, value, unit, "customer-approved input", "уточнить")
+
+inputs = PilotUnitEconomicsInput(
+    pilot_cost=a("Стоимость пилота", 0, "валюта"),
+    treatment_value=a("Одна обработка", 0, "валюта/обработка"),
+    failure_value=a("Один отказ", 0, "валюта/отказ"),
+    downtime_day_value=a("Сутки простоя", 0, "валюта/сут"),
+    saved_tonne_value=a("Сохранённая тонна", 0, "валюта/т"),
+)
+result = compute_pilot_break_even(inputs, PilotOutcomeMix())
 ```
 
-Три канала эффекта: сокращение обработок, снижение отказов,
-восстановленный дебит.
+Результат показывает отдельно treatments-only, failures-only,
+downtime-days-only и saved-tonnes-only, затем смешанный сценарий и его
+множитель до окупаемости. Compact sensitivity использует low/high каждого
+допущения. Каналы нельзя складывать, пока заказчик не исключил двойной учёт
+отказа, простоя и сохранённой добычи.
 
-**Ни одно число не зашито молча.** У каждого параметра есть источник и
-метка достоверности — `"факт"`, `"оценка"` или `"уточнить"`.
-
-```python
-# Что спросить у заказчика, отсортировано по влиянию на результат:
-for u in unknowns(a):
-    print(f"{u.name} = {u.value} {u.unit}  ({u.source})")
-
-# Анализ чувствительности:
-for name, lo, hi, span in tornado(a)[:5]:
-    print(f"{name}: {lo:,.0f} … {hi:,.0f}  размах {span:,.0f}")
-```
-
-Подставить свои цифры:
-
-```python
-from dataclasses import replace
-a["oil_price"] = replace(a["oil_price"], value=1600.0)
-```
+Старый расчёт `compute_effect(default_assumptions())` сохранён для
+воспроизводимости как **scenario envelope, not forecast, not field validated**:
+9,7–54,4 млн BYN/год с серединой 27,8 млн. Это не главный KPI и не обещание
+эффекта: публичные ставки не заменяют себестоимость и маржу заказчика.
+Чек-лист входов: [`reports/customer-input-checklist.md`](reports/customer-input-checklist.md).
 
 ---
 
@@ -593,7 +633,10 @@ galit/
   economics.py    эффект с прослеживаемыми допущениями
   synthetic.py    генератор синтетического фонда (НЕ данные заказчика)
 
-tests/                  127 regression/API/dashboard/bot/calibration тестов
+tests/                  regression/API/dashboard/bot/calibration/release тесты
+release_manifest.py     генерирует JSON + Markdown evidence с фактическим pytest
+run_demo.ps1            Windows one-command preflight, evidence и demo
+reports/                 машинно генерируемые release-manifest.json/.md
 api.py                  FastAPI, OpenAPI: /docs и /openapi.json
 dashboard.py            Streamlit-интерфейс CSV/XLSX
 telegram_bot.py         aiogram-интерфейс /aspo
@@ -709,6 +752,20 @@ print(f"TDS:         {case.water.tds_mg_l/1000:.0f} г/л")  # ожидаем 25
 
 ---
 
+## 14. Baseline-сравнение и измеримый пилот
+
+Модуль `galit/evaluation/pilot.py` сравнивает три заранее зафиксированные стратегии: календарный график, порог независимых механизмов и интегральное ранжирование GALIT. Оценка требует фактический `event_outcome`; supplied CSV без target получает `status=blocked`, потому что одни scores не доказывают качество.
+
+Основная метрика пилота — NDCG@K на untouched holdout; дополнительно считаются Precision@K, Recall@K, пропущенные события и лишние вмешательства. Граница ties обрабатывается как ожидаемое значение по всем перестановкам tied group. Split обязан иметь непересекающиеся wells и строгую хронологию `train < calibration < holdout`.
+
+- Data contract: [`reports/pilot-data-contract.md`](reports/pilot-data-contract.md)
+- Pre-registered shadow protocol на 20–30 скважин: [`reports/pre-registered-pilot-protocol.md`](reports/pre-registered-pilot-protocol.md)
+- Dashboard: вкладка **«Сравнение с baseline / Пилот»**, отдельно от production recommendation; там доступны XLSX-шаблон outcomes, blocked status, labels, assumptions и split summary.
+
+Demo допускает только маркировку **SYNTHETIC / ILLUSTRATIVE / NOT FIELD VALIDATED**; это illustrative comparison, не accuracy. Prevented loss/net value появляются только при явно переданных unit costs и prevention assumptions и остаются сценарным, не причинным расчётом.
+
+---
+
 ## 13. Источники моделей
 
 | модель | источник |
@@ -743,6 +800,20 @@ print(f"TDS:         {case.water.tds_mg_l/1000:.0f} г/л")  # ожидаем 25
 - Кальцит считает screening-эффект сброса давления/дегазации CO₂: pH у устья не должен искусственно уменьшаться. Это ограниченная инженерная оценка, не полный карбонатный flash/speciation.
 - Коррозия считается nodewise на согласованных узлах `depths/T/P/PVT`; результат выбирает максимум и `depth_of_max_m`. При сужении весь профиль пересчитывается повторно, а не только одна условная точка.
 - Галит остаётся screening-моделью активности с оценочной погрешностью; для проектирования нужна строгая электролитная модель и реальные данные.
+
+### Calibration artifact и runtime
+
+`calibration_cli.py calibrate` пишет строгий JSON artifact schema `2.0`: fingerprint/split,
+поддерживаемые параметры, risk-policy, train/holdout metrics, limitations и
+`validation_status`. Runtime применяет только `thermal.u_to` или четыре веса риска,
+локально для вызова `diagnose`/`rank_wells`, без изменения глобального состояния.
+Artifacts без `schema_version` нужно пересоздать CLI; неявной небезопасной миграции нет.
+`blocked` и artifacts с NaN/inf, неизвестными параметрами, несовместимой версией или
+ненормированными весами отклоняются. По умолчанию API и dashboard используют baseline.
+API может загрузить только operator-selected startup artifact из allow-list root через
+`GALIT_CALIBRATION_ARTIFACT` и `GALIT_CALIBRATION_ROOT`; request paths не принимаются.
+Только статус `holdout-validated` означает наличие подходящих holdout targets; software
+tests и synthetic calibration не являются field validation.
 
 ### Точная схема calibration history
 
@@ -808,16 +879,33 @@ is_synthetic
 
 ## Воспроизведение
 
+Одна команда на Windows проверяет Python, запускает полный `pytest`, формирует
+`reports/release-manifest.json` и `reports/release-manifest.md`, затем выполняет
+детерминированное синтетическое demo:
+
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q       # 127 passed
-.\.venv\Scripts\python.exe -m compileall -q galit api.py dashboard.py telegram_bot.py calibration_cli.py
+.\run_demo.ps1
+```
+
+Manifest фиксирует версию, UTC timestamp, Git commit/dirty state, Python,
+фактический результат и число тестов, seed и ключевые показатели demo. Метки
+`synthetic`, `scenario` и `not validated` обязательны: прохождение тестов — это
+**software verification, не model validation** на независимых промысловых данных.
+
+Отдельные команды:
+
+```powershell
+.\.venv\Scripts\python.exe release_manifest.py
+.\.venv\Scripts\python.exe -m compileall -q galit api.py dashboard.py telegram_bot.py calibration_cli.py release_manifest.py
 .\.venv\Scripts\python.exe demo.py --plots
 .\.venv\Scripts\python.exe example_one_well.py
 
 # Интерфейсы (каждая команда запускается отдельно; Ctrl+C для остановки)
 .\.venv\Scripts\python.exe -m streamlit run dashboard.py
 .\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
-$env:GALIT_BOT_TOKEN="<token>"; .\.venv\Scripts\python.exe telegram_bot.py
+Copy-Item .env.example .env
+# Откройте .env и укажите GALIT_BOT_TOKEN; файл .env не попадёт в Git.
+.\.venv\Scripts\python.exe telegram_bot.py
 ```
 
 API: `GET /api/v1/health`, `POST /api/v1/diagnose`; интерактивная схема — `http://127.0.0.1:8000/docs`. Бот требует сеть только при фактическом запуске polling; импорт, parsing и расчёт тестируются offline.

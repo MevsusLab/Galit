@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 
+from galit.demo_scenarios import DEMO_LABELS, run_competition_scenarios
 from galit.economics import (
     compute_effect,
     default_assumptions,
@@ -147,9 +148,36 @@ def demo_fund_ranking() -> None:
           f"({len(high)/len(ranked)*100:.0f} %) -- приоритет обработки")
 
 
+def demo_competition_scenarios() -> None:
+    """Отдельный конкурсный режим; unbiased synthetic fund не изменяется."""
+    hr("КОНКУРСНЫЙ НАБОР АРХЕТИПОВ")
+    print("  " + " / ".join(label.upper() for label in DEMO_LABELS))
+    print("  Учебные входы; результаты заново рассчитаны ядром diagnose.")
+    for item in run_competition_scenarios():
+        r = item.diagnosis
+        focus = item.scenario.educational_focus
+        print(f"\n  {item.scenario.title} [{item.scenario.key}]")
+        print(f"    учебный акцент: {focus}; фактический dominant: {r.dominant}")
+        print("    severity: " + ", ".join(
+            f"{key}={value:.3f}" for key, value in r.severity.items()
+        ))
+        print(f"    риск={r.integrated_risk:.3f}; {item.scenario.interpretation_note}")
+        if item.co2_sensitivity:
+            print("    CO2 sensitivity (доля CO2 -> коррозия, мм/год): " + ", ".join(
+                f"{p.co2_mol_frac:.3f}->{p.corrosion_rate_mm_yr:.3f}"
+                for p in item.co2_sensitivity
+            ))
+        if item.counterfactual:
+            cf = item.counterfactual
+            print(f"    counterfactual: {cf.action}")
+            print(f"      до {cf.before.corrosion['rate_mm_yr']:.3f} -> "
+                  f"после {cf.after.corrosion['rate_mm_yr']:.3f} мм/год")
+
+
 def demo_economics() -> None:
     """Экономика с допущениями и чувствительностью."""
-    hr("4. ЭКОНОМИЧЕСКИЙ ЭФФЕКТ")
+    hr("4. ИСТОРИЧЕСКИЙ СЦЕНАРНЫЙ ENVELOPE — НЕ ПРОГНОЗ")
+    print("  NOT FIELD VALIDATED / NOT A KPI. Для BYN-эффекта нужны ставки заказчика.")
 
     a = default_assumptions()
     res = compute_effect(a)
@@ -246,6 +274,8 @@ def main() -> None:
     demo_index_applicability()
     demo_single_well()
     demo_fund_ranking()
+    if "--competition" in sys.argv:
+        demo_competition_scenarios()
     demo_economics()
 
     if "--plots" in sys.argv:

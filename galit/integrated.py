@@ -107,6 +107,32 @@ MECHANISM_WEIGHTS = DEFAULT_RISK_POLICY.weights
 
 
 @dataclass(frozen=True)
+class RuntimeCalibration:
+    """Validated, immutable runtime overrides supported by the current model."""
+
+    calibration_id: str = "baseline"
+    artifact_version: str = "baseline"
+    validation_status: str = "baseline"
+    thermal_u_to: float | None = None
+    risk_policy: RiskPolicy | None = None
+
+    def __post_init__(self) -> None:
+        if self.validation_status not in {
+            "baseline", "calibrated-not-field-validated", "holdout-validated", "blocked"
+        }:
+            raise ValueError("Unknown calibration validation_status")
+        if self.thermal_u_to is not None and (
+            not math.isfinite(self.thermal_u_to) or not 2.0 <= self.thermal_u_to <= 80.0
+        ):
+            raise ValueError("thermal.u_to must be finite and within [2, 80]")
+        if not self.calibration_id or not self.artifact_version:
+            raise ValueError("RuntimeCalibration requires id and artifact version")
+
+
+BASELINE_CALIBRATION = RuntimeCalibration()
+
+
+@dataclass(frozen=True)
 class UncertaintyConfig:
     """Настройки воспроизводимого сценарного ensemble (не калибровка)."""
 
@@ -295,6 +321,9 @@ class DiagnosisResult:
     policy_id: str = DEFAULT_RISK_POLICY.policy_id
     policy_version: str = DEFAULT_RISK_POLICY.version
     mechanism_weights: dict[str, float] = field(default_factory=lambda: dict(MECHANISM_WEIGHTS))
+    calibration_id: str = BASELINE_CALIBRATION.calibration_id
+    calibration_version: str = BASELINE_CALIBRATION.artifact_version
+    calibration_status: str = BASELINE_CALIBRATION.validation_status
     uncertainty: UncertaintyResult | None = None
 
 
@@ -322,9 +351,19 @@ def diagnose(
     production_mode: bool = False,
     risk_policy: RiskPolicy | None = None,
     uncertainty: UncertaintyConfig | None = None,
+    runtime_calibration: RuntimeCalibration | None = None,
 ) -> DiagnosisResult:
-    """Полный расчёт; uncertainty opt-in сохраняет быстрый legacy-контракт."""
-    policy = risk_policy or DEFAULT_RISK_POLICY
+    """Полный расчёт с локальным immutable runtime config без global leakage."""
+    runtime = runtime_calibration or BASELINE_CALIBRATION
+    if runtime.validation_status == "blocked":
+        raise ValueError("Blocked calibration artifact cannot be applied at runtime")
+    if risk_policy is not None and runtime.risk_policy is not None:
+        raise ValueError("Specify risk_policy or runtime_calibration, not both")
+    policy = runtime.risk_policy or risk_policy or DEFAULT_RISK_POLICY
+    effective_case = replace(
+        case, thermal=replace(case.thermal, u_to=runtime.thermal_u_to)
+    ) if runtime.thermal_u_to is not None else case
+    case = effective_case
     quality = assess_quality(case.provenance)
     if production_mode and not quality.production_ready:
         raise DataQualityError(quality.reasons)
@@ -486,6 +525,9 @@ def diagnose(
         policy_id=policy.policy_id,
         policy_version=policy.version,
         mechanism_weights=dict(policy.weights),
+        calibration_id=runtime.calibration_id,
+        calibration_version=runtime.artifact_version,
+        calibration_status=runtime.validation_status,
     )
     if uncertainty is not None:
         result.uncertainty = _estimate_uncertainty(case, policy, uncertainty, quality)
@@ -630,7 +672,9 @@ def _recommend(dominant: str, severity: dict[str, float],
     return "; ".join(parts)
 
 
-def rank_wells(cases: list[WellCase]) -> list[DiagnosisResult]:
-    """Ранжирование фонда по интегральному риску."""
-    results = [diagnose(c) for c in cases]
+def rank_wells(
+    cases: list[WellCase], runtime_calibration: RuntimeCalibration | None = None
+) -> list[DiagnosisResult]:
+    """Ранжирование фонда с единым immutable runtime config."""
+    results = [diagnose(c, runtime_calibration=runtime_calibration) for c in cases]
     return sorted(results, key=lambda r: r.integrated_risk, reverse=True)

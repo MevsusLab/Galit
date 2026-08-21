@@ -8,6 +8,7 @@ __version__ = "0.1.0"
 
 from .corrosion import CorrosionConditions, corrosion_rate_1995, corrosion_severity
 from .integrated import (
+    BASELINE_CALIBRATION,
     DataProvenance,
     DataQuality,
     DataQualityError,
@@ -15,6 +16,7 @@ from .integrated import (
     DiagnosisResult,
     MECHANISM_WEIGHTS,
     RiskPolicy,
+    RuntimeCalibration,
     ScenarioInterval,
     UncertaintyConfig,
     UncertaintyResult,
@@ -35,6 +37,7 @@ from .wellbore import (
 )
 
 __all__ = [
+    "BASELINE_CALIBRATION",
     "CorrosionConditions",
     "DataProvenance",
     "DataQuality",
@@ -43,6 +46,7 @@ __all__ = [
     "DiagnosisResult",
     "MECHANISM_WEIGHTS",
     "RiskPolicy",
+    "RuntimeCalibration",
     "ScenarioInterval",
     "UncertaintyConfig",
     "UncertaintyResult",

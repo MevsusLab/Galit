@@ -1,0 +1,16 @@
+{
+  "name": "Synthetic example 001",
+  "geometry": {"depth_m": 3200.0, "tubing_id_m": 0.062, "inclination_deg": 15.0},
+  "rate": {"q_oil_m3d": 8.0, "q_water_m3d": 72.0, "gor_m3m3": 65.0},
+  "fluid": {"gamma_oil": 0.86, "gamma_gas": 0.78, "salinity_ppm": 290000.0},
+  "thermal": {"t_surface_c": 8.0, "geothermal_grad": 0.033, "u_to": 15.0, "production_days": 400.0},
+  "water": {
+    "ions_mg_l": {"Na": 95000.0, "Cl": 205000.0, "Ca": 28000.0, "Mg": 3100.0, "K": 1800.0, "HCO3": 130.0, "SO4": 250.0},
+    "ph": 6.0, "t_c": 40.0, "p_pa": 5000000.0
+  },
+  "wax": {"wat_stock_tank_c": 34.0, "wax_content_pct": 6.5},
+  "co2_mol_frac": 0.012,
+  "inhibitor_efficiency": 0.0,
+  "lift_type": "ESP",
+  "p_wellhead_pa": 1400000.0
+}

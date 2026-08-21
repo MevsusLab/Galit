@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+.venv
+venv
+__pycache__
+.pytest_cache
+*.pyc
+data
+reports
+postman
+calibration-artifacts
+*.png
+*.csv
+*.xlsx

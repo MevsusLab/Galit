@@ -1,0 +1,139 @@
+{
+  "schema_version": "1.0",
+  "project": "GALIT",
+  "version": "0.1.0",
+  "generated_at_utc": "2026-08-21T10:27:59.781182+00:00",
+  "git": {
+    "available": true,
+    "commit": "e19767f6ce54927da8930f2485ab2a7a3d479dab",
+    "dirty": true
+  },
+  "runtime": {
+    "python": "3.12.10",
+    "implementation": "CPython"
+  },
+  "software_verification": {
+    "command": "C:\\Users\\agonc\\OneDrive\\Desktop\\PROGRAMIRING\\MevsusLab\\Galit\\.venv\\Scripts\\python.exe -m pytest -q",
+    "result": "passed",
+    "exit_code": 0,
+    "passed": 178,
+    "failed": 0,
+    "errors": 0,
+    "summary": "178 passed, 1 warning in 9.34s"
+  },
+  "demo": {
+    "dataset_label": "synthetic",
+    "interpretation_label": "scenario illustration; not field data",
+    "seed": 20260806,
+    "well_count": 40,
+    "risk_threshold": 0.35,
+    "above_threshold_count": 14,
+    "dominant_mechanism_counts": {
+      "calcite": 1,
+      "corrosion": 39
+    },
+    "top_well": {
+      "name": "Золотухинское 185",
+      "integrated_risk": 0.526505,
+      "dominant_mechanism": "corrosion"
+    },
+    "historical_economic_scenario_envelope": {
+      "label": "scenario envelope; not forecast; not field validated; not KPI",
+      "currency": "BYN/year",
+      "low": 9695249.36,
+      "midpoint": 27836532.02,
+      "high": 54423847.99
+    }
+  },
+  "competition_demo": {
+    "labels": [
+      "synthetic",
+      "illustrative",
+      "not field validated"
+    ],
+    "calculation": "galit.integrated.diagnose",
+    "scenario_count": 5,
+    "scenarios": [
+      {
+        "key": "halite",
+        "educational_focus": "halite",
+        "actual_dominant": "halite",
+        "integrated_risk": 0.528029,
+        "has_co2_sensitivity": false,
+        "has_counterfactual": false
+      },
+      {
+        "key": "calcite",
+        "educational_focus": "calcite",
+        "actual_dominant": "calcite",
+        "integrated_risk": 0.186335,
+        "has_co2_sensitivity": false,
+        "has_counterfactual": false
+      },
+      {
+        "key": "wax",
+        "educational_focus": "wax",
+        "actual_dominant": "wax",
+        "integrated_risk": 0.11883,
+        "has_co2_sensitivity": false,
+        "has_counterfactual": false
+      },
+      {
+        "key": "corrosion",
+        "educational_focus": "corrosion",
+        "actual_dominant": "corrosion",
+        "integrated_risk": 0.244423,
+        "has_co2_sensitivity": true,
+        "has_counterfactual": true
+      },
+      {
+        "key": "mixed_conflict",
+        "educational_focus": "mixed",
+        "actual_dominant": "corrosion",
+        "integrated_risk": 0.371024,
+        "has_co2_sensitivity": true,
+        "has_counterfactual": true
+      }
+    ]
+  },
+  "pilot_unit_economics": {
+    "model": "explicit customer-input break-even",
+    "required_inputs": [
+      "pilot_cost",
+      "treatment_value",
+      "failure_value",
+      "downtime_day_value",
+      "saved_tonne_value"
+    ],
+    "outputs": "separate channel thresholds and mixed break-even",
+    "customer_checklist": "reports/customer-input-checklist.md",
+    "currency_claim": "none until customer-approved unit values are supplied"
+  },
+  "pilot_evidence": {
+    "mode": "shadow; no automatic control",
+    "strategies": [
+      "calendar_fixed_schedule",
+      "independent_mechanism_threshold",
+      "galit_integrated_ranking"
+    ],
+    "primary_metric": "NDCG@K on untouched holdout",
+    "outcome_evaluation": "blocked until real event_outcome targets are supplied",
+    "data_contract": "reports/pilot-data-contract.md",
+    "pre_registered_protocol": "reports/pre-registered-pilot-protocol.md",
+    "leakage_controls": "disjoint wells and strict train < calibration < holdout chronology"
+  },
+  "api_integration_prototype": {
+    "positioning": "integration prototype; not production-ready",
+    "contract": "versioned single and bounded bulk diagnosis",
+    "authentication": "not implemented; roadmap",
+    "container": "non-root with healthcheck and restricted build context",
+    "postman_collection": "postman/collections/GALIT API"
+  },
+  "evidence_labels": {
+    "demo_data": "synthetic",
+    "economic_output": "scenario",
+    "software_verification": "passed",
+    "model_validation": "not validated on independent field data",
+    "allowed_use": "screening and decision-support only"
+  }
+}

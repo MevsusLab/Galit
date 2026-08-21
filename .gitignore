@@ -1,0 +1,18 @@
+# Secrets and local environment configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local tooling and OS files
+.postman/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

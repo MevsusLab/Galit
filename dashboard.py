@@ -20,6 +20,7 @@ Enterprise-интерфейс для инженеров и мастеров до
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 from typing import Any
 
 import pandas as pd
@@ -30,6 +31,9 @@ from pandas.io.formats.style import Styler
 
 import galit
 import galit.synthetic
+from galit.calibration import ArtifactValidationError, ParameterSet
+from galit.evaluation import evaluate_uploaded_rows, pilot_contract_frame
+from galit.integrated import CRITICAL_FIELDS, QUALITY_FIELDS
 from galit import (
     DataProvenance,
     DataQualityError,
@@ -488,6 +492,30 @@ def template_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def pilot_template_bytes() -> bytes:
+    """XLSX contract for prospective outcomes and three frozen strategies."""
+    columns = [row["field"] for row in pilot_contract_frame()]
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(columns=columns).to_excel(writer, sheet_name="Pilot outcomes", index=False)
+        pd.DataFrame(pilot_contract_frame()).to_excel(writer, sheet_name="Data contract", index=False)
+    return buffer.getvalue()
+
+
+def pilot_evaluation_frame(evaluation: dict[str, Any]) -> pd.DataFrame:
+    """Compact dashboard table without relabeling illustrative output as accuracy."""
+    rows = []
+    for item in evaluation.get("strategies", []):
+        rows.append({
+            "Стратегия": item["strategy"], "K": item["k"],
+            "Precision@K": item["precision_at_k"], "Recall@K": item["recall_at_k"],
+            "NDCG@K": item["ndcg_at_k"], "Пропущено событий": item["missed_events"],
+            "Лишних вмешательств": item["unnecessary_interventions"],
+            "Prevented loss": item.get("prevented_loss"), "Net value": item.get("net_value"),
+        })
+    return pd.DataFrame(rows)
+
+
 def _normalize_csv_decimals(df: pd.DataFrame) -> pd.DataFrame:
     """Запятая как десятичный разделитель в числовых колонках CSV.
 
@@ -520,19 +548,43 @@ def read_table(data: bytes, file_name: str) -> pd.DataFrame:
     return _normalize_csv_decimals(df)
 
 
+def load_artifact_bytes(data: bytes) -> ParameterSet:
+    """Strict dashboard helper; uploaded bytes are parsed without filesystem paths."""
+    import json
+    raw = json.loads(data.decode("utf-8"), parse_constant=lambda value: (_ for _ in ()).throw(
+        ArtifactValidationError(f"Non-finite JSON value {value} is forbidden")
+    ))
+    if not isinstance(raw, dict):
+        raise ArtifactValidationError("Calibration artifact root must be a JSON object")
+    return ParameterSet.from_dict(raw)
+
+
+def artifact_summary(parameters: ParameterSet | None) -> dict[str, Any]:
+    if parameters is None:
+        return {"id": "baseline", "version": "baseline", "status": "baseline",
+                "holdout_metrics": {}, "limitations": []}
+    return {"id": parameters.artifact_id, "version": parameters.schema_version,
+            "status": parameters.validation_status,
+            "holdout_metrics": dict(parameters.metrics).get("holdout", {}),
+            "limitations": list(parameters.limitations)}
+
+
 @st.cache_data(show_spinner="Расчёт фонда…")
 def diagnose_frame(
     df: pd.DataFrame,
     production_mode: bool = False,
     include_uncertainty: bool = False,
+    artifact_json: bytes | None = None,
 ) -> tuple[list[DiagnosisResult], list[str]]:
     cases, errors = frame_to_cases(df)
     results: list[DiagnosisResult] = []
     config = UncertaintyConfig() if include_uncertainty else None
+    runtime = load_artifact_bytes(artifact_json).to_runtime() if artifact_json else None
     for case in cases:
         try:
             results.append(diagnose(
-                case, production_mode=production_mode, uncertainty=config
+                case, production_mode=production_mode, uncertainty=config,
+                runtime_calibration=runtime,
             ))
         except DataQualityError as exc:
             errors.append(f"«{case.name}»: не ранжируется — {'; '.join(exc.reasons)}")
@@ -542,6 +594,180 @@ def diagnose_frame(
 @st.cache_data(show_spinner=False)
 def demo_fund() -> list[DiagnosisResult]:
     return [diagnose(c) for c in galit.synthetic.make_fund(40)]
+
+
+# ==========================================================================
+# Доверие, объяснимость и безопасное применение (чистые функции)
+# ==========================================================================
+
+FIELD_RU = {
+    "geometry.depth_m": "глубина скважины",
+    "geometry.tubing_id_m": "внутренний диаметр НКТ",
+    "rate.q_oil_m3d": "дебит нефти",
+    "rate.q_water_m3d": "дебит воды",
+    "rate.gor_m3m3": "газовый фактор",
+    "thermal.t_surface_c": "температура у поверхности",
+    "thermal.geothermal_grad": "геотермический градиент",
+    "thermal.u_to": "коэффициент теплопередачи",
+    "p_wellhead_pa": "буферное давление",
+    "water.ions_mg_l": "ионный состав воды",
+    "water.ph": "pH воды",
+    "water.t_c": "температура пробы воды",
+    "water.p_pa": "давление отбора пробы",
+    "fluid.salinity_ppm": "минерализация воды",
+    "wax.wat_stock_tank_c": "WAT дегазированной нефти",
+    "wax.wax_content_pct": "содержание парафина",
+    "co2_mol_frac": "доля CO₂ в газе",
+    "inhibitor_efficiency": "эффективность ингибитора",
+}
+SOURCE_RU = {
+    "measured": "измерено",
+    "default": "по умолчанию",
+    "synthetic": "синтетическое",
+    "derived": "оценено",
+    "missing": "отсутствует",
+}
+GROUP_RU = {
+    "wellbore": "Ствол и режим работы",
+    "halite_calcite": "Вода и солеотложения",
+    "wax": "АСПО",
+    "corrosion": "Коррозия",
+}
+
+
+def contribution_frame(result: DiagnosisResult) -> pd.DataFrame:
+    """Разложение интегрального риска без повторения физического расчёта."""
+    rows = []
+    total = result.integrated_risk
+    for mechanism in ("halite", "calcite", "wax", "corrosion"):
+        severity = result.severity[mechanism]
+        weight = result.mechanism_weights[mechanism]
+        contribution = severity * weight
+        rows.append({
+            "Механизм": MECH_RU[mechanism],
+            "Тяжесть": severity,
+            "Вес политики": weight,
+            "Вклад в риск": contribution,
+            "Доля integrated risk": contribution / total if total > 0.0 else 0.0,
+        })
+    return pd.DataFrame(rows)
+
+
+def provenance_groups(result: DiagnosisResult) -> dict[str, Any]:
+    """Подготовить происхождение ключевых входов и критичные пробелы."""
+    quality = result.quality
+    missing = set(quality.missing_fields)
+    rows = []
+    for field_name in sorted(QUALITY_FIELDS):
+        source = "missing" if field_name in missing else quality.sources.get(
+            field_name, "measured"
+        )
+        rows.append({
+            "Поле": FIELD_RU.get(field_name, field_name),
+            "Техническое поле": field_name,
+            "Происхождение": SOURCE_RU[source],
+            "source": source,
+        })
+    critical: dict[str, list[str]] = {}
+    for group, fields in CRITICAL_FIELDS.items():
+        bad = sorted(
+            field_name for field_name in fields
+            if field_name in missing
+            or quality.sources.get(field_name, "measured") in {"default", "synthetic"}
+        )
+        if bad:
+            critical[GROUP_RU.get(group, group)] = [
+                FIELD_RU.get(field_name, field_name) for field_name in bad
+            ]
+    return {"rows": rows, "critical": critical}
+
+
+def categorize_warnings(warnings: list[str]) -> dict[str, list[str]]:
+    """Сгруппировать предупреждения, сохранив исходные строки без изменений."""
+    categories: dict[str, list[str]] = {}
+    for warning in warnings:
+        text = warning.lower()
+        if "screening" in text or "качество данных" in text or "default" in text:
+            category = "Качество и назначение расчёта"
+        elif any(token in text for token in ("неприменим", "stiff-davis", "tds", "интервал")):
+            category = "Область применимости модели"
+        elif any(token in text for token in ("сужение", "корроз", "плёнк", "кислот")):
+            category = "Взаимодействия и технологические ограничения"
+        else:
+            category = "Расчётные допущения"
+        categories.setdefault(category, []).append(warning)
+    return categories
+
+
+def decision_trace(result: DiagnosisResult) -> dict[str, Any]:
+    """Краткая трассировка от доминирующего механизма к безопасному next step."""
+    active = [MECH_RU[key] for key, value in result.severity.items() if value >= RISK_WARN]
+    recommendation = result.recommendation
+    conflict = "не выявлен"
+    if len(active) > 1 or any(
+        token in recommendation.lower() for token in ("внимание", "не применять", "сопутствующие")
+    ):
+        conflict = "требуется совместная проверка: " + ", ".join(active)
+
+    bad_by_group = provenance_groups(result)["critical"]
+    needed = [field for fields in bad_by_group.values() for field in fields]
+    if not needed:
+        mechanism_fields = {
+            "halite": ["ионный состав воды", "минерализация и фактические T/P пробы"],
+            "calcite": ["ионный состав, pH и фактические T/P пробы"],
+            "wax": ["WAT и содержание парафина на актуальной пробе"],
+            "corrosion": ["CO₂, pH, фактическая эффективность ингибитора и купон/датчик коррозии"],
+        }
+        needed = mechanism_fields.get(result.dominant, ["фактические промысловые входы"])
+    return {
+        "dominant": MECH_RU.get(result.dominant, result.dominant),
+        "reason": recommendation,
+        "conflict": conflict,
+        "measure_next": needed,
+    }
+
+
+def corrosion_counterfactual(
+    case: WellCase,
+    efficiency: float,
+    *,
+    production_mode: bool = False,
+) -> dict[str, Any]:
+    """Повторный diagnose для сценария ингибирования; исходный case не изменяется."""
+    if not 0.0 <= efficiency <= 1.0:
+        return {"supported": False, "reason": "Эффективность должна быть в диапазоне 0–1."}
+    sources = dict(case.provenance.sources)
+    sources["inhibitor_efficiency"] = "derived"
+    scenario_case = replace(
+        case,
+        inhibitor_efficiency=efficiency,
+        provenance=DataProvenance(
+            sources=sources,
+            missing_fields=list(case.provenance.missing_fields),
+            defaulted_fields=list(case.provenance.defaulted_fields),
+            synthetic_fields=list(case.provenance.synthetic_fields),
+        ),
+    )
+    try:
+        before = diagnose(case, production_mode=production_mode)
+        after = diagnose(scenario_case, production_mode=production_mode)
+    except DataQualityError as exc:
+        return {"supported": False, "reason": "; ".join(exc.reasons)}
+    return {
+        "supported": True,
+        "label": "Сценарий чувствительности, не прогноз",
+        "parameter": "эффективность ингибитора CO₂-коррозии",
+        "before_value": case.inhibitor_efficiency,
+        "after_value": efficiency,
+        "before": before,
+        "after": after,
+    }
+
+
+def action_is_safe(result: DiagnosisResult) -> tuple[bool, str]:
+    if result.quality.production_ready:
+        return True, "Данные пригодны для промышленного режима ядра."
+    return False, "Действие заблокировано: есть критичные default/synthetic/missing inputs."
 
 
 # ==========================================================================
@@ -575,6 +801,10 @@ def rank_frame(results: list[DiagnosisResult]) -> pd.DataFrame:
             "Сценарный диапазон риска": risk_range,
             "Вероятность АСПО": deposition_probability,
             "Статус": risk_status(r.integrated_risk)[2],
+            "Качество": r.quality.grade,
+            "Полнота": r.quality.completeness,
+            "Production-ready": "да" if r.quality.production_ready else "нет",
+            "Критичные defaults": "нет" if r.quality.production_ready else "есть",
             "Лидер": MECH_RU.get(r.dominant, r.dominant),
             "Галит": r.severity["halite"],
             "Кальцит": r.severity["calcite"],
@@ -603,6 +833,7 @@ def style_rank(df: pd.DataFrame) -> Styler:
         df.style.apply(row_paint, axis=1)
         .format({
             "Риск": "{:.2f}",
+            "Полнота": "{:.0%}",
             "Галит": "{:.2f}", "Кальцит": "{:.2f}",
             "АСПО": "{:.2f}", "Коррозия": "{:.2f}",
             "Начало АСПО, м": "{:.0f}",
@@ -790,6 +1021,25 @@ def render_sidebar():
         if upload is not None:
             st.session_state["demo"] = False
 
+        artifact_upload = st.file_uploader(
+            "Calibration artifact (JSON, optional)", type=["json"],
+            help="По умолчанию baseline. Blocked/invalid artifacts не применяются.",
+        )
+        st.session_state["calibration_artifact_bytes"] = (
+            artifact_upload.getvalue() if artifact_upload is not None else None
+        )
+        try:
+            selected = load_artifact_bytes(artifact_upload.getvalue()) if artifact_upload else None
+            summary = artifact_summary(selected)
+            st.caption(f"Config: {summary['id']} · {summary['version']} · {summary['status']}")
+            if summary["holdout_metrics"]:
+                st.json(summary["holdout_metrics"], expanded=False)
+            for limitation in summary["limitations"]:
+                st.warning(limitation)
+        except (ArtifactValidationError, ValueError, UnicodeDecodeError) as exc:
+            st.error(f"Artifact отклонён: {exc}")
+            st.session_state["calibration_artifact_bytes"] = None
+
         st.download_button(
             "Скачать шаблон XLSX",
             data=template_bytes(),
@@ -821,9 +1071,12 @@ def render_sidebar():
                 """
             )
         production_mode = st.toggle(
-            "Промышленный режим",
-            help="Строки с default/synthetic critical inputs не ранжируются",
+            "Промышленный режим (рекомендуется для загруженного фонда)",
+            value=upload is not None,
+            help="Строки с default/synthetic critical inputs не ранжируются; для демо оставьте screening",
         )
+        if upload is not None and not production_mode:
+            st.warning("Промышленный режим выключен: результаты будут только screening.")
         include_uncertainty = st.toggle(
             "Сценарные интервалы неопределённости",
             help="Воспроизводимый sensitivity ensemble; не калиброванный confidence interval",
@@ -861,9 +1114,13 @@ def main() -> None:
     # --- источник данных ---
     results: list[DiagnosisResult] | None = None
     errors: list[str] = []
+    cases_by_name: dict[str, WellCase] = {}
+    source_is_demo = False
 
     if upload is not None:
         df = read_table(upload.getvalue(), upload.name)
+        parsed_cases, _ = frame_to_cases(df)
+        cases_by_name = {case.name: case for case in parsed_cases}
         if df.empty:
             st.error("Файл не содержит данных.")
         else:
@@ -871,17 +1128,36 @@ def main() -> None:
                 df,
                 production_mode=production_mode,
                 include_uncertainty=include_uncertainty,
+                artifact_json=st.session_state.get("calibration_artifact_bytes"),
             )
             if not results:
                 st.error("Ни одна строка не распознана. Проверьте структуру файла "
                          "по шаблону из боковой панели.")
                 results = None
     elif st.session_state.get("demo"):
+        source_is_demo = True
+        demo_cases = galit.synthetic.make_fund(40)
+        cases_by_name = {case.name: case for case in demo_cases}
         results = demo_fund()
 
     if results is None or not results:
         render_welcome()
         return
+
+    # --- постоянная маркировка назначения результата ---
+    all_ready = all(r.quality.production_ready for r in results)
+    if source_is_demo:
+        st.error(
+            "SCREENING · SYNTHETIC · ILLUSTRATIVE · NOT FIELD VALIDATED — "
+            "демонстрационные результаты не являются промышленным прогнозом."
+        )
+    elif not all_ready:
+        st.error(
+            "SCREENING · NOT FIELD VALIDATED — в фонде есть критичные значения "
+            "по умолчанию/синтетические входы; action recommendation не разрешена."
+        )
+    else:
+        st.success("PRODUCTION-READY по критериям качества входов ядра GALIT.")
 
     # --- ключевые показатели фонда ---
     risks = [r.integrated_risk for r in results]
@@ -898,8 +1174,9 @@ def main() -> None:
                 help=f"Чаще всего лидирует: {dominant_counts.index[0]}")
 
     st.divider()
-    tab_rank, tab_profiles, tab_well = st.tabs(
-        ["Ранжирование фонда", "Профили T(z) · P(z)", "Детально по скважине"]
+    tab_rank, tab_profiles, tab_well, tab_pilot = st.tabs(
+        ["Ранжирование фонда", "Профили T(z) · P(z)", "Детально по скважине",
+         "Сравнение с baseline / Пилот"]
     )
 
     # --- вкладка 1: рейтинг ---
@@ -961,15 +1238,109 @@ def main() -> None:
             st.plotly_chart(fig_severity(detail), width="stretch",
                             config={"displaylogo": False, "displayModeBar": False})
 
-        st.markdown(
-            f'<div class="note-box"><b>Рекомендация:</b> {detail.recommendation}</div>',
-            unsafe_allow_html=True,
+        safe, safety_note = action_is_safe(detail)
+        if safe:
+            st.markdown(
+                f'<div class="note-box"><b>Рекомендация:</b> {detail.recommendation}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.error(f"SCREENING — {safety_note}")
+            st.markdown(f"**Предварительная рекомендация, не к исполнению:** {detail.recommendation}")
+
+        st.markdown("### Почему такое решение")
+        st.caption(f"Политика риска: {detail.policy_id}, версия {detail.policy_version}")
+        st.dataframe(
+            contribution_frame(detail).style.format({
+                "Тяжесть": "{:.3f}", "Вес политики": "{:.3f}",
+                "Вклад в риск": "{:.3f}", "Доля integrated risk": "{:.1%}",
+            }),
+            width="stretch", hide_index=True,
         )
+
+        trace = decision_trace(detail)
+        st.markdown("### Decision trace")
+        st.markdown(
+            f"- **Доминирующий механизм:** {trace['dominant']}\n"
+            f"- **Правило/причина рекомендации:** {trace['reason']}\n"
+            f"- **Конфликт технологий:** {trace['conflict']}\n"
+            f"- **Измерить следующим:** {', '.join(trace['measure_next'])}"
+        )
+
+        provenance = provenance_groups(detail)
+        st.markdown("### Provenance входных данных")
+        st.dataframe(pd.DataFrame(provenance["rows"])[
+            ["Поле", "Происхождение", "Техническое поле"]
+        ], width="stretch", hide_index=True)
+        if provenance["critical"]:
+            st.warning("Критичные missing/default/synthetic поля:")
+            for group, fields in provenance["critical"].items():
+                st.markdown(f"- **{group}:** {', '.join(fields)}")
+
+        if detail.dominant == "corrosion" and detail.well in cases_by_name:
+            st.markdown("### Counterfactual профилактики")
+            efficiency = st.slider(
+                "Сценарная эффективность ингибитора, %", 0, 100, 90, 5,
+                key=f"cf_{label}",
+            ) / 100.0
+            scenario = corrosion_counterfactual(cases_by_name[detail.well], efficiency)
+            if scenario["supported"]:
+                before, after = scenario["before"], scenario["after"]
+                st.warning("СЦЕНАРИЙ ЧУВСТВИТЕЛЬНОСТИ, НЕ ПРОГНОЗ")
+                st.dataframe(pd.DataFrame([
+                    {"Показатель": "Интегральный риск", "До": before.integrated_risk, "После": after.integrated_risk},
+                    {"Показатель": "Тяжесть коррозии", "До": before.severity["corrosion"], "После": after.severity["corrosion"]},
+                    {"Показатель": "Скорость коррозии, мм/год", "До": before.corrosion["rate_mm_yr"], "После": after.corrosion["rate_mm_yr"]},
+                ]).style.format({"До": "{:.3f}", "После": "{:.3f}"}),
+                width="stretch", hide_index=True)
+            else:
+                st.info("Сценарий не рассчитан: " + scenario["reason"])
+        else:
+            st.caption("Counterfactual доступен только для поддерживаемой физики ингибирования CO₂-коррозии.")
+
         if detail.warnings:
-            st.markdown('<span class="section-title">Предупреждения расчёта</span>',
-                        unsafe_allow_html=True)
-            for w in detail.warnings:
-                st.markdown(f"- {w}")
+            st.markdown("### Applicability и limitations")
+            for category, warnings in categorize_warnings(detail.warnings).items():
+                st.markdown(f"**{category}**")
+                for warning in warnings:
+                    st.markdown(f"- {warning}")
+            with st.expander("Оригинальные технические warnings"):
+                for warning in detail.warnings:
+                    st.code(warning, language=None)
+
+    # --- вкладка 4: outcomes-based pilot, отдельно от recommendations ---
+    with tab_pilot:
+        st.warning("SHADOW MODE · эта вкладка не создаёт production recommendation.")
+        st.markdown(
+            "Сравниваются calendar/fixed schedule, independent-mechanism threshold "
+            "и GALIT integrated ranking. Без фактического `event_outcome` оценка блокируется."
+        )
+        st.download_button(
+            "Скачать шаблон пилота XLSX", pilot_template_bytes(),
+            file_name="galit_pilot_contract.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        outcomes_upload = st.file_uploader(
+            "Outcomes пилота (CSV/XLSX)", type=["csv", "xlsx", "xls"], key="pilot_outcomes"
+        )
+        if outcomes_upload is None:
+            evaluation = evaluate_uploaded_rows([])
+        else:
+            outcomes = read_table(outcomes_upload.getvalue(), outcomes_upload.name)
+            evaluation = evaluate_uploaded_rows(outcomes.to_dict(orient="records"),
+                                                k=min(5, max(1, len(outcomes))))
+        if evaluation["status"] == "blocked":
+            st.error("BLOCKED — " + evaluation["reason"])
+        else:
+            st.success("Outcomes supplied · holdout comparison")
+            st.dataframe(pilot_evaluation_frame(evaluation), width="stretch", hide_index=True)
+        st.markdown("**Labels:** " + ", ".join(evaluation["labels"]))
+        st.markdown("**Assumptions:**")
+        st.json(evaluation["assumptions"], expanded=False)
+        st.markdown("**Split summary:**")
+        st.json(evaluation["split_summary"], expanded=False)
+        with st.expander("Data contract"):
+            st.dataframe(pd.DataFrame(pilot_contract_frame()), width="stretch", hide_index=True)
 
 
 if __name__ == "__main__":

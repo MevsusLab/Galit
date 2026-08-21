@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import math
 
 
 @dataclass(frozen=True)
@@ -273,3 +274,131 @@ def unknowns(a: dict[str, Assumption]) -> list[Assumption]:
     todo = [x for x in a.values() if x.confidence == "уточнить"]
     todo.sort(key=lambda x: ranked.get(x.name, 0.0), reverse=True)
     return todo
+
+
+# --------------------------------------------------------------------------
+# Unit economics пилота: только пользовательские/заказчиковые ставки
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PilotUnitEconomicsInput:
+    """Явные входы окупаемости пилота в одной валюте.
+
+    Нулевые unit values допустимы и означают, что соответствующий канал
+    не может сам окупить пилот. Отрицательные и non-finite значения запрещены.
+    """
+    pilot_cost: Assumption
+    treatment_value: Assumption
+    failure_value: Assumption
+    downtime_day_value: Assumption
+    saved_tonne_value: Assumption
+
+
+@dataclass(frozen=True)
+class PilotOutcomeMix:
+    prevented_treatments: float = 0.0
+    prevented_failures: float = 0.0
+    avoided_downtime_days: float = 0.0
+    saved_tonnes: float = 0.0
+
+
+@dataclass(frozen=True)
+class PilotBreakEvenResult:
+    pilot_cost: float
+    value_per_treatment: float
+    value_per_failure: float
+    value_per_downtime_day: float
+    value_per_saved_tonne: float
+    treatments_only: float | None
+    failures_only: float | None
+    downtime_days_only: float | None
+    saved_tonnes_only: float | None
+    mixed_value: float
+    mixed_gap: float
+    mixed_break_even_share: float | None
+    mixed_break_even: bool
+
+
+def _checked_nonnegative(name: str, value: float) -> float:
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
+def _units_to_break_even(cost: float, unit_value: float) -> float | None:
+    if cost == 0:
+        return 0.0
+    if unit_value == 0:
+        return None
+    return cost / unit_value
+
+
+def compute_pilot_break_even(
+    inputs: PilotUnitEconomicsInput,
+    mix: PilotOutcomeMix = PilotOutcomeMix(),
+) -> PilotBreakEvenResult:
+    """Посчитать отдельные и смешанный break-even без скрытых ставок.
+
+    ``mixed_break_even_share`` — множитель к переданному mix: 1 означает
+    ровно окупаемость, <1 — заданный mix уже окупает пилот. Если mix имеет
+    нулевую ценность, вернуть ``None`` вместо бесконечности.
+    """
+    pilot_cost = _checked_nonnegative("pilot_cost", inputs.pilot_cost.value)
+    treatment = _checked_nonnegative("treatment_value", inputs.treatment_value.value)
+    failure = _checked_nonnegative("failure_value", inputs.failure_value.value)
+    downtime = _checked_nonnegative("downtime_day_value", inputs.downtime_day_value.value)
+    tonne = _checked_nonnegative("saved_tonne_value", inputs.saved_tonne_value.value)
+    prevented_treatments = _checked_nonnegative(
+        "prevented_treatments", mix.prevented_treatments,
+    )
+    prevented_failures = _checked_nonnegative("prevented_failures", mix.prevented_failures)
+    avoided_days = _checked_nonnegative("avoided_downtime_days", mix.avoided_downtime_days)
+    saved_tonnes = _checked_nonnegative("saved_tonnes", mix.saved_tonnes)
+
+    mixed_value = (
+        prevented_treatments * treatment
+        + prevented_failures * failure
+        + avoided_days * downtime
+        + saved_tonnes * tonne
+    )
+    share = 0.0 if pilot_cost == 0 else (
+        pilot_cost / mixed_value if mixed_value > 0 else None
+    )
+    return PilotBreakEvenResult(
+        pilot_cost=pilot_cost,
+        value_per_treatment=treatment,
+        value_per_failure=failure,
+        value_per_downtime_day=downtime,
+        value_per_saved_tonne=tonne,
+        treatments_only=_units_to_break_even(pilot_cost, treatment),
+        failures_only=_units_to_break_even(pilot_cost, failure),
+        downtime_days_only=_units_to_break_even(pilot_cost, downtime),
+        saved_tonnes_only=_units_to_break_even(pilot_cost, tonne),
+        mixed_value=mixed_value,
+        mixed_gap=mixed_value - pilot_cost,
+        mixed_break_even_share=share,
+        mixed_break_even=mixed_value >= pilot_cost,
+    )
+
+
+def pilot_sensitivity(
+    inputs: PilotUnitEconomicsInput,
+    mix: PilotOutcomeMix,
+) -> list[tuple[str, float | None, float | None]]:
+    """Compact sensitivity: low/high break-even share for top unit values."""
+    rows: list[tuple[str, float | None, float | None]] = []
+    for field_name in (
+        "treatment_value", "failure_value", "downtime_day_value", "saved_tonne_value",
+    ):
+        asm = getattr(inputs, field_name)
+        lo, hi = asm.range
+        low_inputs = replace(inputs, **{field_name: replace(asm, value=lo)})
+        high_inputs = replace(inputs, **{field_name: replace(asm, value=hi)})
+        rows.append((
+            asm.name,
+            compute_pilot_break_even(low_inputs, mix).mixed_break_even_share,
+            compute_pilot_break_even(high_inputs, mix).mixed_break_even_share,
+        ))
+    return rows

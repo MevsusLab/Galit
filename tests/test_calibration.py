@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from galit.calibration import *
 from galit.calibration.loader import template_row
+from calibration_cli import main as calibration_main
 
 def rows(n=4):
  out=[]
@@ -57,3 +58,12 @@ def test_metrics_unavailable_and_synthetic_disclaimer():
  m=regression_metrics("x",[None],[None]);assert not m["available"]
  d=HistoryDataset(snapshots(1),dataset_hash="x",synthetic=True);p=ParameterSet("physical",{"thermal.u_to":15},"v","now","x",["a"],[],{})
  report=evaluate_parameter_set(p,d);assert "not evidence" in report["synthetic_disclaimer"];assert not report["metrics"]["pressure"]["available"]
+
+
+def test_cli_writes_blocked_artifact_for_invalid_history(tmp_path):
+ source=tmp_path/"invalid.csv";source.write_text("well_id,depth_m\nA,1000\n",encoding="utf-8")
+ artifact=tmp_path/"blocked.json"
+ assert calibration_main(["calibrate",str(source),str(artifact)])==0
+ loaded=ParameterSet.load(artifact)
+ assert loaded.validation_status=="blocked" and not loaded.parameters
+ assert loaded.dataset_hash

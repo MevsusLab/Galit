@@ -1,0 +1,72 @@
+{
+  "schema_version": "2.0",
+  "artifact_id": "thermal-u-to-694c2245e751",
+  "model": {
+    "version": "galit-0.1.0",
+    "compatibility": "galit-0.1.x"
+  },
+  "created_at": "2026-08-21T10:27:08.205472+00:00",
+  "data": {
+    "fingerprint": "694c2245e75108766ddf558651bf15949766cb779c59ed1611f83c064a84ef7c",
+    "split": {
+      "method": "group-or-temporal",
+      "seed": 0
+    },
+    "train_wells": [
+      "SYN-0",
+      "SYN-2"
+    ],
+    "holdout_wells": [
+      "SYN-1"
+    ],
+    "synthetic": true
+  },
+  "calibration": {
+    "kind": "physical",
+    "parameters": {
+      "thermal.u_to": 55.625
+    }
+  },
+  "risk_policy": {},
+  "metrics": {
+    "train": {
+      "baseline": {
+        "name": "temperature_c",
+        "available": true,
+        "n": 4,
+        "mae": 12.3548491578616,
+        "rmse": 12.525665559702347
+      },
+      "calibrated": {
+        "name": "temperature_c",
+        "available": true,
+        "n": 4,
+        "mae": 2.0,
+        "rmse": 2.1236679270991905
+      }
+    },
+    "holdout": {
+      "baseline": {
+        "name": "temperature_c",
+        "available": true,
+        "n": 2,
+        "mae": 12.3548491578616,
+        "rmse": 12.364962503522342
+      },
+      "calibrated": {
+        "name": "temperature_c",
+        "available": true,
+        "n": 2,
+        "mae": 0.5098680854787574,
+        "rmse": 0.7141186628213644
+      }
+    }
+  },
+  "limitations": [
+    "Only thermal.u_to is calibrated; halite, calcite, WAT and corrosion are unchanged."
+  ],
+  "labels": {
+    "validation_status": "calibrated-not-field-validated",
+    "production_ready": false
+  }
+}

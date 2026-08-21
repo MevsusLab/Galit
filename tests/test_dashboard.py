@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 
 import pandas as pd
 from pandas.io.formats.style import Styler
@@ -157,3 +158,65 @@ def test_read_table_csv_cp1251_semicolon():
     assert errors == []
     assert cases[0].name == "Вишанская 7"
     assert cases[0].geometry.depth_m == 2800.0
+
+
+# --------------------------------------------- trust / explainability helpers
+
+def test_contributions_are_consistent_with_integrated_risk():
+    result = diagnose(dashboard.galit.synthetic.make_fund(1, seed=11)[0])
+    frame = dashboard.contribution_frame(result)
+    assert len(frame) == 4
+    assert abs(frame["Вклад в риск"].sum() - result.integrated_risk) < 1e-12
+    if result.integrated_risk > 0:
+        assert abs(frame["Доля integrated risk"].sum() - 1.0) < 1e-12
+
+
+def test_provenance_grouping_and_warning_categories_preserve_originals():
+    cases, _ = dashboard.frame_to_cases(pd.DataFrame([base_row()]))
+    result = diagnose(cases[0])
+    grouped = dashboard.provenance_groups(result)
+    assert grouped["critical"]
+    assert any(row["source"] == "synthetic" for row in grouped["rows"])
+    warnings = ["Screening: качество данных D", "TDS 200 г/л -- LSI неприменим"]
+    categories = dashboard.categorize_warnings(warnings)
+    assert sorted(w for values in categories.values() for w in values) == sorted(warnings)
+
+
+def test_decision_trace_has_required_fields():
+    result = diagnose(dashboard.galit.synthetic.make_fund(1, seed=4)[0])
+    trace = dashboard.decision_trace(result)
+    assert trace["dominant"]
+    assert trace["reason"] == result.recommendation
+    assert trace["conflict"]
+    assert trace["measure_next"]
+
+
+def test_counterfactual_is_non_mutating_and_safe():
+    case = dashboard.galit.synthetic.make_fund(1, seed=8)[0]
+    original_efficiency = case.inhibitor_efficiency
+    scenario = dashboard.corrosion_counterfactual(case, 0.9)
+    assert scenario["supported"]
+    assert case.inhibitor_efficiency == original_efficiency
+    assert scenario["after"].corrosion["rate_mm_yr"] <= scenario["before"].corrosion["rate_mm_yr"]
+    assert not dashboard.corrosion_counterfactual(case, 1.1)["supported"]
+
+
+def test_screening_action_is_blocked():
+    cases, _ = dashboard.frame_to_cases(pd.DataFrame([base_row()]))
+    safe, note = dashboard.action_is_safe(diagnose(cases[0]))
+    assert not safe
+    assert "заблокировано" in note
+
+
+def test_pilot_dashboard_helpers():
+    book = dashboard.pilot_template_bytes()
+    assert list(pd.read_excel(io.BytesIO(book), sheet_name="Pilot outcomes").columns)[:3] == [
+        "well_id", "timestamp", "calendar_score"
+    ]
+    evaluation = dashboard.evaluate_uploaded_rows([{
+        "well_id": "A", "timestamp": "2025-01-01T00:00:00+00:00",
+        "event_outcome": 1, "calendar_score": .1,
+        "independent_score": .2, "galit_score": .3,
+    }], k=1)
+    frame = dashboard.pilot_evaluation_frame(evaluation)
+    assert len(frame) == 3 and "NDCG@K" in frame.columns

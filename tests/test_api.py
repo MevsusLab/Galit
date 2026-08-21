@@ -10,7 +10,7 @@ import copy
 import pytest
 from fastapi.testclient import TestClient
 
-from api import app
+from api import MAX_BATCH_SIZE, app, parse_cors_origins
 from galit import (
     FluidProperties,
     ProductionRate,
@@ -181,6 +181,57 @@ class TestDiagnoseEndpoint:
         bad["geometry"][field] = value
         resp = client.post("/api/v1/diagnose", json=bad)
         assert resp.status_code == 422
+
+
+class TestIntegrationPrototypeContract:
+
+    def test_metadata_and_profiles_are_opt_in(self):
+        basic = client.post("/api/v1/diagnose", json=WELL).json()
+        enriched = client.post("/api/v1/diagnose?include_metadata=true", json=WELL).json()
+        profiled = client.post(
+            "/api/v1/diagnose?include_metadata=true&include_profiles=true", json=WELL
+        ).json()
+        assert "quality" not in basic and "profiles" not in basic
+        assert {"quality", "severity", "contributions", "policy", "calibration"} <= set(enriched)
+        assert "profiles" not in enriched
+        assert len(profiled["profiles"]["depth_m"]) > 1
+
+    def test_bulk_partial_failure(self):
+        bad = copy.deepcopy(WELL)
+        del bad["geometry"]
+        response = client.post("/api/v1/diagnose/bulk", json=[WELL, bad])
+        assert response.status_code == 200
+        body = response.json()
+        assert body["succeeded"] == 1 and body["failed"] == 1
+        assert [item["status"] for item in body["items"]] == ["success", "error"]
+        assert "profiles" not in body["items"][0]["result"]
+
+    def test_bulk_limit_is_413_and_empty_is_422(self):
+        assert client.post("/api/v1/diagnose/bulk", json=[]).status_code == 422
+        response = client.post("/api/v1/diagnose/bulk", json=[WELL] * (MAX_BATCH_SIZE + 1))
+        assert response.status_code == 413
+        assert response.json()["detail"]["max_batch_size"] == MAX_BATCH_SIZE
+
+    def test_readiness_is_safe_and_has_no_environment_values(self):
+        body = client.get("/api/v1/readiness").json()
+        serialized = str(body).lower()
+        assert body["status"] == "ready"
+        assert body["authentication"]["roadmap"] is True
+        assert all(word not in serialized for word in ("token", "password", "secret", "artifact_path"))
+
+    def test_request_id_is_propagated_or_generated(self):
+        generated = client.get("/api/v1/health")
+        supplied = client.get("/api/v1/health", headers={"X-Request-ID": "trace-123"})
+        assert generated.headers["x-request-id"]
+        assert supplied.headers["x-request-id"] == "trace-123"
+
+    def test_cors_helper_default_deny_and_no_wildcard(self):
+        assert parse_cors_origins(None) == []
+        assert parse_cors_origins("https://one.example, https://two.example/") == [
+            "https://one.example", "https://two.example"
+        ]
+        with pytest.raises(RuntimeError):
+            parse_cors_origins("*")
 
 
 class TestHealthEndpoint:

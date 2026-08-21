@@ -19,12 +19,19 @@
 """
 from __future__ import annotations
 
-from typing import Annotated
+import json
+import logging
+import os
+import time
+import uuid
+from pathlib import Path
+from typing import Annotated, Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field, field_validator
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import galit
 from galit import (
@@ -40,7 +47,55 @@ from galit import (
     WellGeometry,
     diagnose,
 )
+from galit.calibration import ParameterSet
 from galit.scale import MW as KNOWN_IONS
+
+
+def _load_server_calibration():
+    """Load only the operator-selected startup artifact; requests never supply paths."""
+    configured = os.environ.get("GALIT_CALIBRATION_ARTIFACT", "").strip()
+    if not configured:
+        return None
+    path = Path(configured).resolve(strict=True)
+    allowed_root = Path(os.environ.get("GALIT_CALIBRATION_ROOT", "calibration-artifacts")).resolve()
+    if path != allowed_root and allowed_root not in path.parents:
+        raise RuntimeError(f"Calibration artifact must be inside allow-listed root {allowed_root}")
+    return ParameterSet.load(path)
+
+
+SERVER_PARAMETER_SET = _load_server_calibration()
+SERVER_RUNTIME_CALIBRATION = SERVER_PARAMETER_SET.to_runtime() if SERVER_PARAMETER_SET else None
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if value < 1:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def parse_cors_origins(raw: str | None) -> list[str]:
+    """Parse an explicit origin allow-list; empty means deny cross-origin requests."""
+    origins = [item.strip().rstrip("/") for item in (raw or "").split(",") if item.strip()]
+    if "*" in origins:
+        raise RuntimeError("GALIT_CORS_ORIGINS wildcard is forbidden")
+    if any(not origin.startswith(("http://", "https://")) for origin in origins):
+        raise RuntimeError("GALIT_CORS_ORIGINS entries must be absolute http(s) origins")
+    return list(dict.fromkeys(origins))
+
+
+MAX_BATCH_SIZE = _positive_int_env("GALIT_MAX_BATCH_SIZE", 25)
+CORS_ORIGINS = parse_cors_origins(os.environ.get("GALIT_CORS_ORIGINS"))
+AUDIT_LOGGER = logging.getLogger("galit.audit")
+EVIDENCE_LABELS = {
+    "model_validation": "not validated on independent field data",
+    "allowed_use": "screening and decision-support only",
+    "api_positioning": "integration prototype; not production-ready",
+}
 
 
 # --------------------------------------------------------------------------
@@ -143,64 +198,18 @@ class WellCaseIn(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# Модель ответа (зеркало DiagnosisResult)
+# Response assembly
 # --------------------------------------------------------------------------
 
-class IntervalOut(BaseModel):
-    p05: float | None
-    p50: float | None
-    p95: float | None
-
-
-class UncertaintyOut(BaseModel):
-    method: str
-    samples: int
-    seed: int
-    confidence_label: str
-    integrated_risk: IntervalOut
-    mechanisms: dict[str, IntervalOut]
-    wax_onset_m: IntervalOut
-    probability_of_deposition: float
-    warnings: list[str]
-
-
-class DiagnosisOut(BaseModel):
-    """Legacy-поля плюс opt-in сценарная неопределённость."""
-
-    integrated_risk: float = Field(description="Интегральный риск, 0..1")
-    dominant: str = Field(description="Доминирующий механизм: halite | calcite | wax | corrosion")
-    wax_onset_m: float | None = Field(
-        default=None, description="Глубина начала АСПО от устья, м (None -- отложений нет)",
-    )
-    recommendation: str = Field(description="Рекомендация по технологии")
-    warnings: list[str] = Field(default_factory=list, description="Предупреждения расчёта")
-    policy: dict[str, object] | None = None
-    uncertainty: UncertaintyOut | None = None
-
-
-# --------------------------------------------------------------------------
-# Приложение
-# --------------------------------------------------------------------------
-
-app = FastAPI(
-    title="ГАЛИТ API",
-    description="Интегрированная диагностика осложнений добычи: "
-                "галит, кальцит, АСПО, CO2-коррозия.",
-    version=galit.__version__,
-)
+LEGACY_FIELDS = {"integrated_risk", "dominant", "wax_onset_m", "recommendation", "warnings"}
 
 
 def _to_well_case(payload: WellCaseIn) -> WellCase:
-    """Отображение JSON-модели и автоматически выведенного provenance."""
+    """Map the API model and inferred provenance without accepting client paths."""
     sources: dict[str, str] = {}
-    optional_paths = {
-        "co2_mol_frac": "co2_mol_frac",
-        "inhibitor_efficiency": "inhibitor_efficiency",
-        "p_wellhead_pa": "p_wellhead_pa",
-    }
-    for api_field, core_path in optional_paths.items():
+    for api_field in ("co2_mol_frac", "inhibitor_efficiency", "p_wellhead_pa"):
         if api_field not in payload.model_fields_set:
-            sources[core_path] = "default"
+            sources[api_field] = "default"
     if "wax_content_pct" not in payload.wax.model_fields_set:
         sources["wax.wax_content_pct"] = "default"
     return WellCase(
@@ -219,63 +228,217 @@ def _to_well_case(payload: WellCaseIn) -> WellCase:
     )
 
 
-@app.get("/api/v1/health", summary="Проверка живости сервиса")
+def _quality_dict(quality: Any) -> dict[str, Any]:
+    return {
+        "grade": quality.grade,
+        "completeness": quality.completeness,
+        "production_ready": quality.production_ready,
+        "missing_fields": quality.missing_fields,
+        "defaulted_fields": quality.defaulted_fields,
+        "synthetic_fields": quality.synthetic_fields,
+        "reasons": quality.reasons,
+    }
+
+
+def _result_dict(result: Any, *, include_metadata: bool, include_profiles: bool,
+                 include_uncertainty: bool) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "integrated_risk": result.integrated_risk,
+        "dominant": result.dominant,
+        "wax_onset_m": result.wax_onset_m,
+        "recommendation": result.recommendation,
+        "warnings": result.warnings,
+    }
+    if include_metadata:
+        body.update({
+            "quality": _quality_dict(result.quality),
+            "severity": result.severity,
+            "contributions": {
+                key: result.severity[key] * result.mechanism_weights[key]
+                for key in result.severity
+            },
+            "applicability_warnings": result.warnings,
+            "policy": {"id": result.policy_id, "version": result.policy_version,
+                       "weights": result.mechanism_weights},
+            "calibration": {"id": result.calibration_id,
+                            "version": result.calibration_version,
+                            "status": result.calibration_status},
+            "evidence_labels": EVIDENCE_LABELS,
+        })
+    if include_profiles:
+        body["profiles"] = {
+            "depth_m": result.depths,
+            "temperature_c": result.temps,
+            "pressure_pa": result.pressures,
+            "wat_c": result.wat_profile,
+        }
+    if include_uncertainty:
+        body["uncertainty"] = {
+            "method": result.uncertainty.method,
+            "samples": result.uncertainty.samples,
+            "seed": result.uncertainty.seed,
+            "confidence_label": result.uncertainty.confidence_label,
+            "integrated_risk": vars(result.uncertainty.integrated_risk),
+            "mechanisms": {key: vars(value) for key, value in result.uncertainty.mechanisms.items()},
+            "wax_onset_m": vars(result.uncertainty.wax_onset_m),
+            "probability_of_deposition": result.uncertainty.probability_of_deposition,
+            "warnings": result.uncertainty.warnings,
+        }
+    return body
+
+
+async def _calculate(payload: WellCaseIn, production_mode: bool,
+                     include_uncertainty: bool, uncertainty_seed: int,
+                     uncertainty_samples: int) -> Any:
+    config = UncertaintyConfig(seed=uncertainty_seed, samples=uncertainty_samples) \
+        if include_uncertainty else None
+    return await run_in_threadpool(
+        diagnose, _to_well_case(payload), production_mode, None, config,
+        SERVER_RUNTIME_CALIBRATION,
+    )
+
+
+# --------------------------------------------------------------------------
+# Application and endpoints
+# --------------------------------------------------------------------------
+
+app = FastAPI(
+    title="GALIT API",
+    description=("Versioned integration-prototype API for well complication screening. "
+                 "It is decision support, not automatic control and not production-ready. "
+                 "Authentication/authorization claims are explicitly roadmap items."),
+    version=galit.__version__,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
+)
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    supplied = request.headers.get("x-request-id", "")
+    request_id = supplied.strip()[:128] if supplied.strip() else str(uuid.uuid4())
+    started = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+    except Exception:
+        AUDIT_LOGGER.exception(json.dumps({
+            "event": "api_request", "request_id": request_id,
+            "method": request.method, "path": request.url.path, "status": 500,
+        }, ensure_ascii=False))
+        raise
+    response.headers["X-Request-ID"] = request_id
+    AUDIT_LOGGER.info(json.dumps({
+        "event": "api_request", "request_id": request_id,
+        "method": request.method, "path": request.url.path, "status": status_code,
+        "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+    }, ensure_ascii=False))
+    return response
+
+
+@app.get("/api/v1/health", summary="Liveness check",
+         description="Process liveness only; safe for container health checks.")
 async def health() -> dict[str, str]:
     return {"status": "ok", "version": galit.__version__}
 
 
+@app.get("/api/v1/readiness", summary="Readiness and safe runtime metadata",
+         description="Returns non-secret runtime configuration and evidence labels.")
+async def readiness() -> dict[str, Any]:
+    runtime = SERVER_RUNTIME_CALIBRATION
+    return {
+        "status": "ready",
+        "version": galit.__version__,
+        "max_batch_size": MAX_BATCH_SIZE,
+        "cors": {"mode": "allow-list" if CORS_ORIGINS else "deny", "origin_count": len(CORS_ORIGINS)},
+        "calibration": {
+            "id": runtime.calibration_id if runtime else "baseline",
+            "version": runtime.artifact_version if runtime else "baseline",
+            "status": runtime.validation_status if runtime else "baseline",
+        },
+        "authentication": {"status": "not implemented", "roadmap": True},
+        "evidence_labels": EVIDENCE_LABELS,
+    }
+
+
 @app.post(
-    "/api/v1/diagnose",
-    response_model=None,
-    summary="Диагностика одной скважины",
+    "/api/v1/diagnose", response_model=None, summary="Diagnose one well",
+    description=("Keeps the historical five-field response by default. Set include_metadata=true "
+                 "for quality, severity, policy/calibration and evidence labels; profiles are opt-in."),
+    responses={400: {"description": "Calculation or production-mode data-quality rejection"},
+               422: {"description": "Request schema validation error"}},
 )
 async def diagnose_well(
     payload: WellCaseIn,
     production_mode: bool = False,
+    include_metadata: bool = False,
+    include_profiles: bool = False,
     include_uncertainty: bool = False,
     uncertainty_seed: int = 0,
-    uncertainty_samples: int = 100,
-) -> DiagnosisOut:
-    """По умолчанию точный legacy JSON; расширение включается явно."""
-    case = _to_well_case(payload)
+    uncertainty_samples: int = Query(default=100, ge=20, le=1000),
+) -> dict[str, Any]:
     try:
-        config = UncertaintyConfig(seed=uncertainty_seed, samples=uncertainty_samples) \
-            if include_uncertainty else None
-        result = await run_in_threadpool(
-            diagnose, case, production_mode, None, config
-        )
+        result = await _calculate(payload, production_mode, include_uncertainty,
+                                  uncertainty_seed, uncertainty_samples)
     except DataQualityError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"message": str(exc), "reasons": exc.reasons},
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except KeyError as exc:  # например, непредвиденный неизвестный ион
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    output = DiagnosisOut(
-        integrated_risk=result.integrated_risk,
-        dominant=result.dominant,
-        wax_onset_m=result.wax_onset_m,
-        recommendation=result.recommendation,
-        warnings=result.warnings,
-    )
-    if include_uncertainty:
-        output.policy = {
-            "id": result.policy_id,
-            "version": result.policy_version,
-            "weights": result.mechanism_weights,
-        }
-        output.uncertainty = UncertaintyOut.model_validate(result.uncertainty, from_attributes=True)
-    if include_uncertainty:
-        return output.model_dump()  # type: ignore[return-value]
-    # Legacy contract has exactly five keys and keeps an explicit null onset.
-    return output.model_dump(
-        include={
-            "integrated_risk", "dominant", "wax_onset_m",
-            "recommendation", "warnings",
-        }
-    )  # type: ignore[return-value]
+        raise HTTPException(400, detail={"message": str(exc), "reasons": exc.reasons}) from exc
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    return _result_dict(result, include_metadata=include_metadata or include_uncertainty,
+                        include_profiles=include_profiles,
+                        include_uncertainty=include_uncertainty)
+
+
+@app.post(
+    "/api/v1/diagnose/bulk", response_model=None, summary="Diagnose a bounded well batch",
+    description=("Each item is validated and calculated independently. Item errors do not abort "
+                 "the batch. An empty/non-array envelope is 422; exceeding the configured limit is 413."),
+    responses={413: {"description": "Batch exceeds GALIT_MAX_BATCH_SIZE"},
+               422: {"description": "Envelope must be a non-empty JSON array"}},
+)
+async def diagnose_bulk(
+    payload: list[Any],
+    production_mode: bool = False,
+    include_profiles: bool = False,
+) -> dict[str, Any]:
+    if not payload:
+        raise HTTPException(422, detail="bulk payload must contain at least one item")
+    if len(payload) > MAX_BATCH_SIZE:
+        raise HTTPException(413, detail={"message": "batch size exceeds configured limit",
+                                         "max_batch_size": MAX_BATCH_SIZE, "received": len(payload)})
+    items: list[dict[str, Any]] = []
+    succeeded = 0
+    for index, raw in enumerate(payload):
+        try:
+            model = WellCaseIn.model_validate(raw)
+            result = await _calculate(model, production_mode, False, 0, 100)
+            items.append({"index": index, "status": "success", "name": model.name,
+                          "result": _result_dict(result, include_metadata=True,
+                                                 include_profiles=include_profiles,
+                                                 include_uncertainty=False)})
+            succeeded += 1
+        except ValidationError as exc:
+            items.append({"index": index, "status": "error", "error": {
+                "type": "validation_error", "status_code": 422,
+                "details": exc.errors(include_url=False, include_input=False)}})
+        except DataQualityError as exc:
+            items.append({"index": index, "status": "error", "error": {
+                "type": "data_quality_error", "status_code": 422,
+                "message": str(exc), "reasons": exc.reasons}})
+        except (ValueError, KeyError) as exc:
+            items.append({"index": index, "status": "error", "error": {
+                "type": "calculation_error", "status_code": 422, "message": str(exc)}})
+    return {"count": len(items), "succeeded": succeeded, "failed": len(items) - succeeded,
+            "max_batch_size": MAX_BATCH_SIZE, "items": items,
+            "policy": {"id": "server-selected", "request_overrides": False},
+            "evidence_labels": EVIDENCE_LABELS}
 
 
 if __name__ == "__main__":

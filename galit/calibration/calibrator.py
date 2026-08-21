@@ -1,25 +1,14 @@
 """Bounded physical and risk-policy calibration using train records only."""
 from __future__ import annotations
-from dataclasses import dataclass, asdict, replace
+from dataclasses import replace
 from datetime import datetime, timezone
-import json, math, random
-from pathlib import Path
-from typing import Any, Callable
+import math, random
+from typing import Callable
 
+from .artifact import MODEL_VERSION, ParameterSet, validation_status_for
 from .loader import snapshot_to_well_case
 from .metrics import regression_metrics, classification_metrics
 from .schema import WellSnapshot
-
-MODEL_VERSION="galit-0.1.0"
-@dataclass
-class ParameterSet:
-    kind:str; parameters:dict[str,float]; model_version:str; created_at:str
-    dataset_hash:str; train_wells:list[str]; test_wells:list[str]; metrics:dict[str,Any]
-    synthetic:bool=False
-    def save(self,path:str|Path)->Path:
-        p=Path(path); p.write_text(json.dumps(asdict(self),ensure_ascii=False,indent=2),encoding="utf-8"); return p
-    @classmethod
-    def load(cls,path:str|Path)->"ParameterSet": return cls(**json.loads(Path(path).read_text(encoding="utf-8")))
 
 def _bounded_search(objective:Callable[[float],float], bounds:tuple[float,float], *, method:str="grid", seed:int=0, iterations:int=81)->tuple[float,float]:
     lo,hi=bounds
@@ -55,9 +44,15 @@ def calibrate_physical(train:list[WellSnapshot], test:list[WellSnapshot], datase
         baseline=[_temperature_prediction(s,float(s.values["u_to_w_m2k"])) if y is not None else None for s,y in zip(rows,targets)]
         calibrated=[_temperature_prediction(s,best) if y is not None else None for s,y in zip(rows,targets)]
         return {"baseline":regression_metrics("temperature_c",targets,baseline),"calibrated":regression_metrics("temperature_c",targets,calibrated)}
-    metrics={"train":measure(train),"test":measure(test)}
-    return ParameterSet("physical",{parameter:best},MODEL_VERSION,datetime.now(timezone.utc).isoformat(),dataset_hash,
-      sorted({s.well_id for s in train}),sorted({s.well_id for s in test}),metrics,synthetic)
+    metrics={"train":measure(train),"holdout":measure(test)}
+    status=validation_status_for(metrics,synthetic=synthetic)
+    return ParameterSet(
+      artifact_id=f"thermal-u-to-{dataset_hash[:12]}",kind="physical",parameters={parameter:best},
+      model_version=MODEL_VERSION,created_at=datetime.now(timezone.utc).isoformat(),dataset_hash=dataset_hash,
+      train_wells=tuple(sorted({s.well_id for s in train})),test_wells=tuple(sorted({s.well_id for s in test})),
+      metrics=metrics,synthetic=synthetic,split={"method":"group-or-temporal","seed":seed},
+      limitations=("Only thermal.u_to is calibrated; halite, calcite, WAT and corrosion are unchanged.",),
+      validation_status=status)
 
 def calibrate_risk_policy(train:list[WellSnapshot],test:list[WellSnapshot],dataset_hash:str,*,seed:int=0,synthetic:bool=False)->ParameterSet:
     """Fit non-negative simplex risk weights to labels/rankings; never physical parameters."""
@@ -72,7 +67,7 @@ def calibrate_risk_policy(train:list[WellSnapshot],test:list[WellSnapshot],datas
     for _ in range(500):
         raw=[rng.random() for _ in mechanisms]; total=sum(raw); candidates.append([v/total for v in raw])
     weights=min(candidates,key=lambda w:sum((sum(a*b for a,b in zip(x,w))-y)**2 for x,y in features))
-    params={f"weight.{m}":w for m,w in zip(mechanisms,weights)}
+    policy_weights={m:w for m,w in zip(mechanisms,weights)}
     def evaluate(rows):
         ys=[]; base=[]; cal=[]
         for s in rows:
@@ -80,5 +75,14 @@ def calibrate_risk_policy(train:list[WellSnapshot],test:list[WellSnapshot],datas
             d=diagnose(snapshot_to_well_case(s)); x=[d.severity[m] for m in mechanisms]
             ys.append(float(s.values["risk_label"]));base.append(sum(a*b for a,b in zip(x,[.3,.15,.3,.25])));cal.append(sum(a*b for a,b in zip(x,weights)))
         return {"baseline":classification_metrics("risk",ys,base),"calibrated":classification_metrics("risk",ys,cal)}
-    return ParameterSet("risk-policy",params,MODEL_VERSION,datetime.now(timezone.utc).isoformat(),dataset_hash,
-      sorted({s.well_id for s in train}),sorted({s.well_id for s in test}),{"train":evaluate(train),"test":evaluate(test)},synthetic)
+    metrics={"train":evaluate(train),"holdout":evaluate(test)}
+    status=validation_status_for(metrics,synthetic=synthetic)
+    return ParameterSet(
+      artifact_id=f"risk-policy-{dataset_hash[:12]}",kind="risk-policy",
+      parameters={f"weight.{m}":w for m,w in policy_weights.items()},
+      model_version=MODEL_VERSION,created_at=datetime.now(timezone.utc).isoformat(),dataset_hash=dataset_hash,
+      train_wells=tuple(sorted({s.well_id for s in train})),test_wells=tuple(sorted({s.well_id for s in test})),
+      metrics=metrics,synthetic=synthetic,split={"method":"group-or-temporal","seed":seed},
+      risk_policy={"id":f"galit-calibrated-{dataset_hash[:12]}","version":"1.0","weights":policy_weights},
+      limitations=("Only integrated risk weights are calibrated; physical mechanism models are unchanged.",),
+      validation_status=status)

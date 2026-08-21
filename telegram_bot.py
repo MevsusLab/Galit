@@ -25,12 +25,21 @@ import logging
 import os
 import sys
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
+
+from dotenv import load_dotenv
 
 import galit
 from galit import DataProvenance, WellCase, diagnose
@@ -44,7 +53,8 @@ from galit.wellbore import (
 from galit.scale import WaterAnalysis
 from galit.wax import WaxProperties
 
-BOT_TOKEN = os.environ.get("GALIT_BOT_TOKEN", "")
+# Секреты загружаются только при запуске main(), но не при импорте в тестах.
+BOT_TOKEN = ""
 
 # ==========================================================================
 # Разбор параметров команды (чистые функции -- тестируются pytest)
@@ -238,48 +248,112 @@ def wax_treatment(result: galit.DiagnosisResult, case: WellCase) -> str:
     )
 
 
+def _level(value: float) -> str:
+    """Понятный уровень для нормированной шкалы 0…1."""
+    if value < 0.25:
+        return "низкий"
+    if value < 0.50:
+        return "умеренный"
+    if value < 0.75:
+        return "высокий"
+    return "критический"
+
+
+def _format_rate(value: float) -> str:
+    """Показать малую скорость без ложного округления до нуля."""
+    if value == 0:
+        return "0"
+    if abs(value) < 0.01:
+        return f"{value:.4f}".rstrip("0").rstrip(".")
+    return f"{value:.2f}"
+
+
+def _warning_summary(result: galit.DiagnosisResult) -> list[str]:
+    """Свести технические предупреждения к нескольким безопасным выводам."""
+    warnings = [str(w) for w in result.warnings]
+    lowered = " ".join(warnings).lower()
+    summary: list[str] = []
+
+    incomplete = (not result.quality.production_ready or
+                  any(key in lowered for key in ("screening", "типов", "default",
+                                                  "synthetic", "фактическ")))
+    if incomplete:
+        summary.append("Неполные/типовые данные: результат только для предварительной оценки.")
+
+    rate = result.corrosion.get("rate_mm_yr")
+    anomalous_corrosion = (
+        isinstance(rate, (int, float)) and float(rate) >= 0.25
+    ) or any(key in lowered for key in ("аномальн", "коррози"))
+    if anomalous_corrosion:
+        detail = (f" ({_format_rate(float(rate))} мм/год)"
+                  if isinstance(rate, (int, float)) else "")
+        summary.append("Аномально высокая коррозия" + detail +
+                       ": требуется инструментальная проверка.")
+
+    if any(key in lowered for key in ("неприменим", "stiff-davis", "tds", "дегазац")):
+        summary.append("Расчёт солеотложений ограничен областью применимости моделей.")
+    if any(key in lowered for key in ("температур", "сужение", "профил")):
+        summary.append("Профиль ствола и влияние отложений требуют сверки с промысловыми данными.")
+
+    if warnings and not summary:
+        summary.append("Есть модельные допущения; проверьте исходные данные перед решением.")
+    return summary[:4]
+
+
 def format_report(result: galit.DiagnosisResult, case: WellCase,
                   treatment: str) -> str:
-    """Строго структурированный ответ мастеру (HTML, без эмодзи)."""
+    """Компактный HTML-отчёт для быстрого управленческого просмотра."""
     e = html.escape
+    risk = float(result.integrated_risk)
+    wax = float(result.severity["wax"])
     lines = [
+        "<b>ГАЛИТ · Предварительная оценка</b>",
         f"Скважина: <b>{e(result.well)}</b>",
-        "<b>Режим: screening.</b> Типовая вода и значения по умолчанию "
-        "не являются промышленным прогнозом.",
-        f"Качество данных: {result.quality.grade} "
-        f"({result.quality.completeness:.0%})",
         "",
+        "<b>Итог</b>",
+        f"Риск: <b>{risk:.2f} · {_level(risk)}</b>",
+        f"Доминирующий фактор: {e(_mech_ru(result.dominant))}",
     ]
 
+    rate = result.corrosion.get("rate_mm_yr")
+    if isinstance(rate, (int, float)):
+        lines.append(f"Коррозия: <b>{_format_rate(float(rate))} мм/год</b>")
+
+    lines += ["", "<b>АСПО</b>"]
     if result.wax_onset_m is None:
-        lines += [
-            "Глубина начала АСПО: <b>не прогнозируется</b> — "
-            "поток по всему стволу теплее WAT",
-        ]
+        lines.append("Начало отложений: <b>не прогнозируется</b>")
     else:
         onset = result.wax_onset_m
         depth = case.geometry.depth_m
         zone_pct = 100.0 * onset / depth if depth else 0.0
         lines += [
-            f"Глубина начала АСПО: <b>{onset:.0f} м</b> от устья",
-            f"Зона отложений: устье — {onset:.0f} м ({zone_pct:.0f} % ствола)",
+            f"Начало отложений: <b>{onset:.0f} м</b> от устья",
+            f"Зона: 0–{onset:.0f} м · {zone_pct:.0f}% ствола",
         ]
+    lines.append(f"Тяжесть: <b>{wax:.2f} · {_level(wax)}</b>")
 
-    sev = result.severity["wax"]
     lines += [
-        f"Тяжесть АСПО: {sev:.2f}",
-        f"Интегральный риск: {result.integrated_risk:.2f} "
-        f"(доминирует: {e(_mech_ru(result.dominant))})",
         "",
-        f"<b>Обработка АСПО:</b> {e(treatment)}",
+        "<b>Рекомендуемое действие</b>",
+        f"Основное действие: {e(treatment)}",
+    ]
+    if result.recommendation and result.recommendation.strip() != treatment.strip():
+        lines.append(f"Дополнительно: {e(result.recommendation)}")
+
+    quality_level = ("достаточная" if result.quality.production_ready else
+                     "ограниченная")
+    lines += [
+        "",
+        "<b>Надёжность данных</b>",
+        f"{quality_level.capitalize()} · класс {e(result.quality.grade)} · "
+        f"полнота {result.quality.completeness:.0%}",
     ]
 
-    if result.recommendation:
-        lines += ["", f"Рекомендация ядра ГАЛИТ: {e(result.recommendation)}"]
-    if result.warnings:
-        lines += ["", "Предупреждения расчёта:"]
-        lines += [f"· {e(w)}" for w in result.warnings]
-    lines += ["", "ГАЛИТ — расчётная оценка, не заменяет промысловые исследования."]
+    summary = _warning_summary(result)
+    if summary:
+        lines += ["", "<b>Краткие ограничения</b>"]
+        lines += [f"• {e(item)}" for item in summary]
+    lines += ["", "Оценка не заменяет промысловые исследования и инженерную проверку."]
     return "\n".join(lines)
 
 
@@ -288,30 +362,93 @@ def _mech_ru(mech: str) -> str:
             "corrosion": "коррозия"}.get(mech, mech)
 
 
-HELP_TEXT = (
-    "<b>ГАЛИТ · экспресс-диагностика АСПО</b>\n"
-    "\n"
-    "<b>Команда расчёта</b>\n"
-    "<code>/aspo глубина НКТ нефть вода ГФ WAT</code>\n"
-    "позиционно: глубина, м · НКТ, мм · дебит нефти, м3/сут · "
-    "дебит воды, м3/сут · газовый фактор, м3/м3 · WAT, °C\n"
-    "\n"
-    "Пример:\n"
-    "<code>/aspo 3200 62 8 72 65 34</code>\n"
-    "\n"
-    "<b>Необязательные параметры</b> (добавляются через пробел):\n"
-    "<code>скважина=Речицкая-123</code> — название для отчёта\n"
-    "<code>способ=ШГН</code> — ЭЦН | ШГН | фонтан\n"
-    "<code>парафин=6.5</code> — содержание парафина, % масс.\n"
-    "<code>температура=8</code> — температура пород у поверхности, °C\n"
-    "<code>градиент=0.033</code> — геотермический градиент, К/м\n"
-    "<code>co2=0.012</code> — доля CO2 в попутном газе\n"
-    "<code>буферное=1.4</code> — буферное давление, МПа\n"
-    "\n"
-    "Запятая в числах допускается как десятичный разделитель.\n"
-    "Расчёт выполняется моделью ГАЛИТ (Ramey T(z), Beggs &amp; Brill P(z), "
-    "WAT(P)); солевой состав принимается типовым для Припятского прогиба."
+MENU_NEW = "🔎 Новый расчёт"
+MENU_HELP = "ℹ️ Справка"
+MENU_EXAMPLE = "📋 Пример"
+CANCEL = "Отмена"
+
+MAIN_MENU = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=MENU_NEW)],
+        [KeyboardButton(text=MENU_HELP), KeyboardButton(text=MENU_EXAMPLE)],
+    ],
+    resize_keyboard=True,
+    input_field_placeholder="Выберите действие",
 )
+CANCEL_MENU = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=CANCEL)]], resize_keyboard=True,
+)
+
+START_TEXT = (
+    "<b>ГАЛИТ · предварительная оценка АСПО</b>\n"
+    "Показывает начало отложений, уровень риска и рекомендуемое действие.\n\n"
+    "<b>Шесть шагов</b>\n"
+    "1. Глубина, м\n2. Внутренний диаметр НКТ, мм\n"
+    "3. Дебит нефти, м³/сут\n4. Дебит воды, м³/сут\n"
+    "5. Газовый фактор, м³/м³\n6. WAT, °C\n\n"
+    "Чтобы начать, нажмите «🔎 Новый расчёт»."
+)
+HELP_TEXT = (
+    "<b>Справка</b>\n\n"
+    "ГАЛИТ выполняет предварительную оценку АСПО и помогает выбрать "
+    "следующее действие. Результат требует инженерной проверки.\n\n"
+    "<b>Пошагово:</b> нажмите «🔎 Новый расчёт» и введите 6 значений: "
+    "глубина (м), НКТ (мм), нефть и вода (м³/сут), газовый фактор "
+    "(м³/м³), WAT (°C). Доступна отмена.\n\n"
+    "<b>Быстрая команда</b>\n"
+    "<code>/aspo глубина НКТ нефть вода ГФ WAT</code>\n"
+    "Пример: <code>/aspo 3200 62 8 72 65 34</code>\n\n"
+    "Дополнительно: <code>скважина=</code>, <code>способ=</code>, "
+    "<code>парафин=</code>, <code>температура=</code>, "
+    "<code>градиент=</code>, <code>co2=</code>, <code>буферное=</code>. "
+    "Десятичный разделитель — точка или запятая."
+)
+EXAMPLE_TEXT = (
+    "<b>Пример исходных данных</b>\n\n"
+    "Глубина: 3200 м\nНКТ: 62 мм\nНефть: 8 м3/сут\n"
+    "Вода: 72 м3/сут\nГазовый фактор: 65 м3/м3\nWAT: 34 °C\n\n"
+    "Команда: <code>/aspo 3200 62 8 72 65 34</code>"
+)
+
+FSM_FIELDS = (
+    ("depth_m", "Введите глубину скважины, м (100–8000):"),
+    ("tubing_mm", "Введите внутренний диаметр НКТ, мм (20–200):"),
+    ("q_oil_m3d", "Введите дебит нефти, м3/сут (0–1000):"),
+    ("q_water_m3d", "Введите дебит воды, м3/сут (0–1000):"),
+    ("gor_m3m3", "Введите газовый фактор, м3/м3 (0–2000):"),
+    ("wat_c", "Введите WAT, °C (от -20 до 90):"),
+)
+
+
+class Calculation(StatesGroup):
+    collecting = State()
+
+
+def validate_fsm_value(key: str, raw: str) -> tuple[float | None, str | None]:
+    """Проверить одно значение пошагового ввода через общие диапазоны."""
+    value = _to_float(raw.strip())
+    if value is None:
+        return None, "Введите число. Допускается десятичная запятая."
+    lo, hi, label = RANGES[key]
+    if not lo <= value <= hi:
+        return None, f"Значение вне диапазона: {label}."
+    return value, None
+
+
+async def send_calculation(message: Message, params: dict[str, float | str]) -> None:
+    """Выполнить расчёт и отправить отчёт для команды и FSM."""
+    case = build_case(params)
+    try:
+        result = await asyncio.to_thread(diagnose, case)
+    except (ValueError, KeyError) as exc:
+        await message.answer(f"Расчёт не выполнен: {html.escape(str(exc))}",
+                             reply_markup=MAIN_MENU)
+        return
+    await message.answer(
+        format_report(result, case, wax_treatment(result, case)),
+        disable_web_page_preview=True, reply_markup=MAIN_MENU,
+    )
+
 
 # ==========================================================================
 # Обработчики aiogram
@@ -321,9 +458,38 @@ dp = Dispatcher()
 
 
 @dp.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(START_TEXT, reply_markup=MAIN_MENU)
+
+
 @dp.message(Command("help"))
+@dp.message(F.text == MENU_HELP)
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP_TEXT, disable_web_page_preview=True)
+    await message.answer(HELP_TEXT, disable_web_page_preview=True,
+                         reply_markup=MAIN_MENU)
+
+
+@dp.message(F.text == MENU_EXAMPLE)
+async def show_example(message: Message) -> None:
+    await message.answer(EXAMPLE_TEXT, reply_markup=MAIN_MENU)
+
+
+@dp.message(Command("cancel"))
+@dp.message(F.text.casefold() == CANCEL.casefold())
+async def cancel_calculation(message: Message, state: FSMContext) -> None:
+    active = await state.get_state()
+    await state.clear()
+    text = "Расчёт отменён." if active else "Активного расчёта нет."
+    await message.answer(text, reply_markup=MAIN_MENU)
+
+
+@dp.message(F.text == MENU_NEW)
+async def start_calculation(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(Calculation.collecting)
+    await state.update_data(step=0, params={})
+    await message.answer(FSM_FIELDS[0][1], reply_markup=CANCEL_MENU)
 
 
 @dp.message(Command("aspo"))
@@ -331,42 +497,60 @@ async def cmd_aspo(message: Message) -> None:
     args = (message.text or "").split()[1:]
     if not args:
         await message.answer("Формат: /aspo глубина НКТ нефть вода ГФ WAT\n"
-                             "Пример: /aspo 3200 62 8 72 65 34\n"
-                             "Полный список параметров — /help")
+                             "Пример: /aspo 3200 62 8 72 65 34",
+                             reply_markup=MAIN_MENU)
         return
-
     params, errors = parse_args(args)
     if errors:
         await message.answer(
             "Параметры не приняты:\n· " + "\n· ".join(errors) +
-            "\n\nФормат: /aspo 3200 62 8 72 65 34 — подробнее /help"
+            "\n\nПодробнее — /help", reply_markup=MAIN_MENU,
         )
         return
+    await send_calculation(message, params)
 
-    case = build_case(params)
-    try:
-        # ядро CPU-bound: уводим из event loop, чтобы бот отвечал параллельно
-        result = await asyncio.to_thread(diagnose, case)
-    except (ValueError, KeyError) as exc:
-        await message.answer(f"Расчёт не выполнен: {html.escape(str(exc))}")
+
+@dp.message(Calculation.collecting)
+async def collect_calculation_value(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    step = int(data.get("step", 0))
+    key, _ = FSM_FIELDS[step]
+    value, error = validate_fsm_value(key, message.text or "")
+    if error:
+        await message.answer(error, reply_markup=CANCEL_MENU)
         return
 
-    await message.answer(
-        format_report(result, case, wax_treatment(result, case)),
-        disable_web_page_preview=True,
-    )
+    params = dict(data.get("params", {}))
+    params[key] = value
+    step += 1
+    if step < len(FSM_FIELDS):
+        await state.update_data(step=step, params=params)
+        await message.answer(FSM_FIELDS[step][1], reply_markup=CANCEL_MENU)
+        return
+
+    await state.clear()
+    _, errors = parse_args([str(params[key]) for key in REQUIRED_KEYS])
+    if errors:
+        await message.answer("Параметры не приняты:\n· " + "\n· ".join(errors),
+                             reply_markup=MAIN_MENU)
+        return
+    await message.answer("Данные приняты. Выполняю расчёт…",
+                         reply_markup=ReplyKeyboardRemove())
+    await send_calculation(message, params)
 
 
 @dp.message()
 async def fallback(message: Message) -> None:
     await message.answer(
-        "Расчёт АСПО: /aspo глубина НКТ нефть вода ГФ WAT\n"
-        "Пример: /aspo 3200 62 8 72 65 34\nПолный список параметров — /help"
+        "Выберите действие в меню. Для быстрого расчёта доступна команда /aspo, "
+        "описание — /help.", reply_markup=MAIN_MENU,
     )
 
 
 async def main() -> None:
-    if not BOT_TOKEN:
+    load_dotenv()
+    bot_token = os.environ.get("GALIT_BOT_TOKEN", "").strip()
+    if not bot_token:
         print("Не задан токен бота. Получите его у @BotFather и выполните:\n"
               "    set GALIT_BOT_TOKEN=123456:ABC...\n"
               "(Windows) или export GALIT_BOT_TOKEN=... (Linux/macOS)")
@@ -376,7 +560,7 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    bot = Bot(token=BOT_TOKEN,
+    bot = Bot(token=bot_token,
               default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     await bot.delete_webhook(drop_pending_updates=True)
     print("ГАЛИТ-бот запущен. Остановка — Ctrl+C.")

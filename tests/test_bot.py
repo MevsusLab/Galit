@@ -67,6 +67,51 @@ def test_parse_bad_lift_type():
 
 # ------------------------------------------------------------- сборка кейса
 
+def test_main_menu_is_small_and_professional():
+    labels = [button.text for row in tb.MAIN_MENU.keyboard for button in row]
+    assert labels == [tb.MENU_NEW, tb.MENU_HELP, tb.MENU_EXAMPLE]
+    assert len(labels) == 3
+    assert "/aspo" in tb.HELP_TEXT
+
+
+def test_start_and_help_explain_six_steps_units_and_how_to_begin():
+    assert "Шесть шагов" in tb.START_TEXT
+    assert all(f"{number}." in tb.START_TEXT for number in range(1, 7))
+    for unit in ("м", "мм", "м³/сут", "м³/м³", "°C"):
+        assert unit in tb.START_TEXT
+    assert tb.MENU_NEW in tb.START_TEXT
+    assert "предварительную оценку" in tb.HELP_TEXT
+    assert len(tb.START_TEXT) < 600
+    assert len(tb.HELP_TEXT) < 1100
+
+
+def test_fsm_field_order_and_value_validation():
+    assert [key for key, _ in tb.FSM_FIELDS] == tb.REQUIRED_KEYS
+    value, error = tb.validate_fsm_value("depth_m", "3200,5")
+    assert value == 3200.5 and error is None
+    value, error = tb.validate_fsm_value("tubing_mm", "не число")
+    assert value is None and "число" in error
+    value, error = tb.validate_fsm_value("wat_c", "100")
+    assert value is None and "диапазона" in error
+
+
+def test_step_values_produce_same_params_as_aspo():
+    stepped = {}
+    for (key, _), raw in zip(tb.FSM_FIELDS, POSITIONAL):
+        value, error = tb.validate_fsm_value(key, raw)
+        assert error is None
+        stepped[key] = value
+    command, errors = tb.parse_args(POSITIONAL)
+    assert errors == []
+    assert stepped == command
+
+
+def test_import_does_not_load_bot_token():
+    assert tb.BOT_TOKEN == ""
+
+
+# ------------------------------------------------------------- сборка кейса
+
 def test_build_case_units_and_defaults():
     params, _ = tb.parse_args(POSITIONAL)
     case = tb.build_case(params)
@@ -86,7 +131,8 @@ def test_report_no_deposition_branch():
     assert result.wax_onset_m is None               # физика кейса: без отложений
     report = tb.format_report(result, case, tb.wax_treatment(result, case))
     assert "не прогнозируется" in report
-    assert "Обработка АСПО" in report
+    assert "<b>Рекомендуемое действие</b>" in report
+    assert "Основное действие:" in report
     assert "<b>Речицкая 123</b>" in report
 
 
@@ -98,8 +144,48 @@ def test_report_deposition_branch():
     assert result.wax_onset_m is not None
     report = tb.format_report(result, case, tb.wax_treatment(result, case))
     assert f"{result.wax_onset_m:.0f} м" in report
-    assert "Зона отложений" in report
-    assert "Интегральный риск" in report
+    assert "Зона:" in report
+    assert "<b>Итог</b>" in report
+    assert "Риск:" in report
+    assert any(level in report for level in
+               ("низкий", "умеренный", "высокий", "критический"))
+
+
+def test_report_has_scan_friendly_blocks_and_summarized_warnings():
+    params, _ = tb.parse_args(POSITIONAL)
+    case = tb.build_case(params)
+    result = diagnose(case)
+    raw_warning = "Screening: " + "очень длинное техническое объяснение " * 30
+    result.warnings = [raw_warning, "TDS 300 г/л -- LSI неприменим"]
+    result.corrosion["rate_mm_yr"] = 0.876
+    report = tb.format_report(result, case, "Проверить режим <сейчас>")
+
+    for block in ("Предварительная оценка", "<b>Итог</b>", "<b>АСПО</b>",
+                  "<b>Рекомендуемое действие</b>", "<b>Надёжность данных</b>",
+                  "<b>Краткие ограничения</b>"):
+        assert block in report
+    assert "screening" not in report.lower()
+    assert raw_warning not in report
+    assert "Неполные/типовые данные" in report
+    assert "Аномально высокая коррозия" in report
+    assert report.count("• ") <= 4
+    assert "&lt;сейчас&gt;" in report
+
+
+def test_corrosion_small_nonzero_rate_is_not_rounded_to_zero():
+    params, _ = tb.parse_args(POSITIONAL)
+    case = tb.build_case(params)
+    result = diagnose(case)
+    result.corrosion["rate_mm_yr"] = 0.0004
+    report = tb.format_report(result, case, "Наблюдение")
+    assert "0.0004 мм/год" in report
+    assert "Коррозия: <b>0 мм/год" not in report
+
+
+def test_level_boundaries():
+    assert [tb._level(value) for value in (0.0, 0.25, 0.5, 0.75)] == [
+        "низкий", "умеренный", "высокий", "критический",
+    ]
 
 
 def test_report_escapes_well_name():
