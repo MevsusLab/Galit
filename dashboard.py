@@ -343,9 +343,7 @@ def frame_to_cases(df: pd.DataFrame) -> tuple[list[WellCase], list[str]]:
     cases: list[WellCase] = []
 
     for i, (_, row) in enumerate(df.iterrows(), start=2):
-        name_raw = row[by_canon["name"]]
-        label = str(name_raw).strip() if pd.notna(name_raw) else ""
-        label = label or f"строка {i}"
+        label = _well_label(row[by_canon["name"]], i)
         vals: dict[str, float | str] = {}
         defaulted: set[str] = set()
         ok = True
@@ -522,7 +520,13 @@ def _normalize_csv_decimals(df: pd.DataFrame) -> pd.DataFrame:
     Файлы, сохранённые из русского Excel, содержат «0,062» вместо «0.062».
     Текстовые колонки (названия скважин) остаются нетронутыми.
     """
+    name_columns = {
+        original for original, canonical in normalize_headers(df.columns).items()
+        if canonical == "name"
+    }
     for col in df.columns:
+        if str(col) in name_columns:
+            continue
         # pandas 2 даёт строкам object, pandas 3 -- специализированный str
         if df[col].dtype == object or pd.api.types.is_string_dtype(df[col]):
             converted = pd.to_numeric(
@@ -532,6 +536,15 @@ def _normalize_csv_decimals(df: pd.DataFrame) -> pd.DataFrame:
             if converted.notna().any():
                 df[col] = converted
     return df
+
+
+def _well_label(value: Any, row_number: int) -> str:
+    """Стабильная подпись: числовой идентификатор 139 не становится 139.0."""
+    if pd.isna(value):
+        return f"строка {row_number}"
+    if isinstance(value, (int, float)) and float(value).is_integer():
+        return str(int(value))
+    return str(value).strip() or f"строка {row_number}"
 
 
 @st.cache_data(show_spinner=False)
@@ -768,6 +781,27 @@ def action_is_safe(result: DiagnosisResult) -> tuple[bool, str]:
     if result.quality.production_ready:
         return True, "Данные пригодны для промышленного режима ядра."
     return False, "Действие заблокировано: есть критичные default/synthetic/missing inputs."
+
+
+def empty_results_status(parsed_count: int, production_mode: bool) -> tuple[str, str]:
+    """Классифицировать пустой результат без смешения parsing и quality gate."""
+    if parsed_count > 0 and production_mode:
+        return (
+            "quality_gate",
+            "Файл распознан, но строки не прошли промышленный контроль качества.",
+        )
+    return (
+        "parsing",
+        "Ни одна строка не распознана. Проверьте структуру файла по шаблону.",
+    )
+
+
+def render_file_remarks(errors: list[str]) -> None:
+    """Показать замечания до любого раннего выхода из main."""
+    if errors:
+        with st.expander(f"Замечания при разборе и контроле качества ({len(errors)})"):
+            for error in errors:
+                st.markdown(f"- {error}")
 
 
 # ==========================================================================
@@ -1071,12 +1105,17 @@ def render_sidebar():
                 """
             )
         production_mode = st.toggle(
-            "Промышленный режим (рекомендуется для загруженного фонда)",
-            value=upload is not None,
-            help="Строки с default/synthetic critical inputs не ранжируются; для демо оставьте screening",
+            "Промышленный режим",
+            value=False,
+            help="Включайте только для промысловых данных: строки с critical default/synthetic inputs будут заблокированы.",
         )
         if upload is not None and not production_mode:
-            st.warning("Промышленный режим выключен: результаты будут только screening.")
+            st.warning(
+                "SCREENING · NOT FIELD VALIDATED: промышленный режим выключен. "
+                "Результаты доступны для проверки, action recommendation заблокирована."
+            )
+        elif upload is not None:
+            st.caption("Промышленный контроль включён: неполные строки не будут ранжироваться.")
         include_uncertainty = st.toggle(
             "Сценарные интервалы неопределённости",
             help="Воспроизводимый sensitivity ensemble; не калиброванный confidence interval",
@@ -1131,9 +1170,8 @@ def main() -> None:
                 artifact_json=st.session_state.get("calibration_artifact_bytes"),
             )
             if not results:
-                st.error("Ни одна строка не распознана. Проверьте структуру файла "
-                         "по шаблону из боковой панели.")
-                results = None
+                _, message = empty_results_status(len(parsed_cases), production_mode)
+                st.error(message)
     elif st.session_state.get("demo"):
         source_is_demo = True
         demo_cases = galit.synthetic.make_fund(40)
@@ -1141,6 +1179,7 @@ def main() -> None:
         results = demo_fund()
 
     if results is None or not results:
+        render_file_remarks(errors)
         render_welcome()
         return
 
@@ -1192,10 +1231,7 @@ def main() -> None:
         )
         st.dataframe(style_rank(rank_frame(results)), width="stretch",
                      height=32 * (len(results) + 1))
-        if errors:
-            with st.expander(f"Замечания при разборе файла ({len(errors)})"):
-                for e in errors:
-                    st.markdown(f"- {e}")
+        render_file_remarks(errors)
 
     # --- вкладка 2: профили ---
     with tab_profiles:

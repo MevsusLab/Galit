@@ -15,6 +15,12 @@ import dashboard
 from galit import diagnose
 
 
+MINIMAL_CSV = (
+    "name,depth_m,tubing_id_m,q_oil_m3d,q_water_m3d,gor_m3m3,wat_stock_tank_c\n"
+    "139,3200,0.062,8,72,65,34\n"
+).encode()
+
+
 def base_row() -> dict:
     """Минимальная строка фонда: только обязательные колонки."""
     return {
@@ -158,6 +164,36 @@ def test_read_table_csv_cp1251_semicolon():
     assert errors == []
     assert cases[0].name == "Вишанская 7"
     assert cases[0].geometry.depth_m == 2800.0
+
+
+def test_exact_minimal_csv_screening_and_production_gate():
+    df = dashboard.read_table(MINIMAL_CSV, "minimal.csv")
+    cases, parse_errors = dashboard.frame_to_cases(df)
+    assert parse_errors == []
+    assert len(cases) == 1 and cases[0].name == "139"
+
+    screening, screening_errors = dashboard.diagnose_frame(df, production_mode=False)
+    assert len(screening) == 1 and screening_errors == []
+    assert not screening[0].quality.production_ready
+    assert dashboard.action_is_safe(screening[0])[0] is False
+
+    production, quality_errors = dashboard.diagnose_frame(df, production_mode=True)
+    assert production == []
+    assert quality_errors
+    assert "не ранжируется" in quality_errors[0]
+    assert "нет фактических данных" in quality_errors[0]
+    assert "water.ions_mg_l" in quality_errors[0]
+
+
+def test_empty_results_status_distinguishes_parsing_from_quality_gate():
+    kind, message = dashboard.empty_results_status(1, production_mode=True)
+    assert kind == "quality_gate"
+    assert "файл распознан" in message.lower()
+    assert "промышленный контроль" in message
+
+    kind, message = dashboard.empty_results_status(0, production_mode=False)
+    assert kind == "parsing"
+    assert "не распознана" in message
 
 
 # --------------------------------------------- trust / explainability helpers
