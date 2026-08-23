@@ -234,9 +234,76 @@ class TestIntegrationPrototypeContract:
             parse_cors_origins("*")
 
 
+class TestMasterPlanEndpoint:
+
+    def test_partial_contract_and_safety(self):
+        bad = copy.deepcopy(WELL)
+        del bad["geometry"]
+        response = client.post(
+            "/api/v1/master-plan?plan_date=2026-08-23&min_risk=0&limit=5",
+            json=[WELL, bad],
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["policy"]["mode"] == "partial"
+        assert body["plan_date"] == "2026-08-23"
+        assert body["summary"]["diagnosed_wells"] == 1
+        assert len(body["errors"]) == 1
+        assert {"summary", "tasks", "loss_methodology", "advisory_notice"} <= set(body)
+        if body["tasks"]:
+            task = body["tasks"][0]
+            assert {"well", "risk", "possible_oil_loss", "safe_to_act"} <= set(task)
+            if not task["safe_to_act"]:
+                assert "Не выполнять воздействие" in task["recommended_action"]
+
+    def test_empty_and_limit_validation(self):
+        assert client.post("/api/v1/master-plan", json=[]).status_code == 422
+        assert client.post("/api/v1/master-plan?min_risk=2", json=[WELL]).status_code == 422
+
+
 class TestHealthEndpoint:
 
     def test_health(self):
         resp = client.get("/api/v1/health")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
+
+
+class TestForecastEndpoint:
+
+    @staticmethod
+    def payload() -> dict:
+        return {"well": copy.deepcopy(WELL), "as_of": "2026-08-23T12:00:00+00:00"}
+
+    def test_happy_path_and_response_essentials(self):
+        response = client.post("/api/v1/forecast", json=self.payload())
+        assert response.status_code == 200
+        body = response.json()
+        assert body["well"] == WELL["name"]
+        assert {"summary", "events", "methodology", "advisory_notice"} <= set(body)
+        assert len(body["events"]) == 5
+        required = {"mechanism", "status", "horizon_start_date", "probability",
+                    "risk_band", "likelihood", "basis", "required_inputs"}
+        assert all(required <= set(event) for event in body["events"])
+        assert all(event["horizon_start_date"] is None for event in body["events"])
+        assert all(event["probability"] is None for event in body["events"])
+
+    def test_invalid_timezone_history_config_and_calibration(self):
+        bad_timezone = self.payload() | {"as_of": "2026-08-23T12:00:00"}
+        assert client.post("/api/v1/forecast", json=bad_timezone).status_code == 422
+
+        bad_history = self.payload()
+        bad_history["history_snapshots"] = [{
+            "well": WELL["name"], "timestamp": "2026-08-01T00:00:00",
+            "wax_severity": .2,
+        }]
+        assert client.post("/api/v1/forecast", json=bad_history).status_code == 422
+
+        bad_config = self.payload() | {"config": {"min_history_points": 2}}
+        assert client.post("/api/v1/forecast", json=bad_config).status_code == 422
+
+        bad_calibration = self.payload() | {"calibration_evidence": {
+            "artifact_id": "a", "dataset_id": "d", "validation_status": "validated",
+            "holdout_n": -1, "brier_score": .1, "mechanisms": ["wax"],
+        }}
+        assert client.post("/api/v1/forecast", json=bad_calibration).status_code == 422

@@ -19,8 +19,11 @@ Enterprise-интерфейс для инженеров и мастеров до
 """
 from __future__ import annotations
 
+import base64
 import io
 from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -37,6 +40,7 @@ from galit.integrated import CRITICAL_FIELDS, QUALITY_FIELDS
 from galit import (
     DataProvenance,
     DataQualityError,
+    DiagnosedWell,
     DiagnosisResult,
     FluidProperties,
     ProductionRate,
@@ -47,6 +51,7 @@ from galit import (
     WellCase,
     WellGeometry,
     diagnose,
+    generate_master_plan,
 )
 
 # ==========================================================================
@@ -84,6 +89,27 @@ MECH_RU = {
 }
 
 FONT_FAMILY = "Segoe UI, Helvetica Neue, Arial, sans-serif"
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+BACKGROUND_ASSET = PROJECT_ROOT / "assets" / "dashboard-background.png"
+HEADER_LOGO_ASSET = PROJECT_ROOT / "assets" / "header-logo.png"
+
+
+def local_image_data_uri(path: Path) -> str:
+    """Return a data URI for a local image, independent of the process CWD."""
+    mime_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+    try:
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
+    mime_type = mime_types.get(path.suffix.lower(), "application/octet-stream")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def background_data_uri(path: Path = BACKGROUND_ASSET) -> str:
+    """Return the repository-local dashboard background as a data URI."""
+    return local_image_data_uri(path)
+
 
 # ==========================================================================
 # Схема входного файла
@@ -173,7 +199,12 @@ st.set_page_config(
 
 
 def inject_css() -> None:
-    """Корпоративный стиль: белый фон, зелёные акценты, тёмный текст."""
+    """Apply the corporate theme over a repository-local image background."""
+    background_uri = background_data_uri()
+    background_layer = (
+        f"url('{background_uri}') center / cover fixed no-repeat"
+        if background_uri else "linear-gradient(135deg, #DCE9E2, #F6F8F7)"
+    )
     st.markdown(
         f"""
         <style>
@@ -181,21 +212,63 @@ def inject_css() -> None:
         .stApp {{
             font-family: {FONT_FAMILY};
             color: {INK};
-            background: #FFFFFF;
+            background:
+                linear-gradient(115deg, rgba(244, 248, 246, 0.64) 0%, rgba(244, 248, 246, 0.36) 48%, rgba(11, 74, 47, 0.25) 100%),
+                linear-gradient(rgba(8, 35, 25, 0.09), rgba(8, 35, 25, 0.09)),
+                {background_layer};
+            background-attachment: fixed;
+            background-position: center;
+            background-size: cover;
+        }}
+        .stApp [data-testid="stMain"] {{ background: transparent; }}
+        .stApp [data-testid="stMainBlockContainer"] {{
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+            box-shadow: none;
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+            margin-top: 1rem;
+            margin-bottom: 2rem;
+            padding-left: clamp(1rem, 3vw, 3rem);
+            padding-right: clamp(1rem, 3vw, 3rem);
         }}
         p, li, span, label {{ color: {INK}; }}
-        h1, h2, h3 {{ color: {INK}; }}
+        h1, h2, h3 {{
+            color: {INK};
+            text-shadow: 0 1px 2px rgba(255, 255, 255, 0.70);
+        }}
 
         /* строгий режим: без фирменной радужной полосы и колонтитула */
         div[data-testid="stDecoration"] {{ display: none; }}
         #MainMenu, footer {{ visibility: hidden; }}
-        header[data-testid="stHeader"] {{ background: #FFFFFF; }}
+        header[data-testid="stHeader"] {{
+            background: rgba(255, 255, 255, 0.42);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+        }}
 
         /* ---------- шапка приложения ---------- */
         .app-header {{
+            position: relative;
+            display: flex;
+            align-items: center;
+            min-height: 82px;
+            background: rgba(255, 255, 255, 0.76);
+            border: 1px solid rgba(214, 222, 217, 0.74);
             border-left: 5px solid {GREEN_700};
-            padding: 2px 0 4px 18px;
-            margin-bottom: 4px;
+            border-radius: 10px;
+            box-shadow: 0 8px 24px rgba(9, 47, 32, 0.10);
+            backdrop-filter: blur(8px) saturate(112%);
+            -webkit-backdrop-filter: blur(8px) saturate(112%);
+            padding: 12px 18px;
+            margin-bottom: 12px;
+        }}
+        .app-header-text {{
+            position: relative;
+            z-index: 1;
+            flex: 1 1 auto;
+            min-width: 0;
         }}
         .app-title {{
             font-size: 26px; font-weight: 700; color: {GREEN_900};
@@ -204,18 +277,55 @@ def inject_css() -> None:
         .app-subtitle {{
             font-size: 14px; color: {INK_MUTED}; margin-top: 2px;
         }}
+        .app-header-logo {{
+            position: fixed;
+            top: 12px;
+            right: 40px;
+            z-index: 1001;
+            display: block;
+            width: 220px;
+            height: 64px;
+            max-width: 220px;
+            max-height: 64px;
+            object-fit: contain;
+        }}
+        @media (max-width: 900px) {{
+            .app-header {{ min-height: 0; }}
+            .app-header-logo {{
+                top: 16px;
+                right: 20px;
+                width: 132px;
+                height: 44px;
+                max-width: 132px;
+                max-height: 44px;
+            }}
+        }}
         .app-rule {{
             border: none; border-top: 1px solid {BORDER}; margin: 14px 0 20px 0;
         }}
 
         /* ---------- боковая панель ---------- */
         section[data-testid="stSidebar"] {{
-            background: #FFFFFF;
-            border-right: 1px solid {BORDER};
+            background: rgba(255, 255, 255, 0.68);
+            border-right: 1px solid rgba(214, 222, 217, 0.70);
+            box-shadow: 8px 0 28px rgba(9, 47, 32, 0.10);
+            backdrop-filter: blur(12px) saturate(118%);
+            -webkit-backdrop-filter: blur(12px) saturate(118%);
+        }}
+        section[data-testid="stSidebar"] > div {{ background: transparent; }}
+        section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {{
+            padding-top: 0;
+        }}
+        section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{
+            transform: translateY(-42px);
         }}
         .sidebar-brand {{
             font-size: 15px; font-weight: 700; color: {GREEN_900};
-            padding: 10px 0 2px 0; letter-spacing: 0.4px;
+            padding: 0 0 2px 0; margin-top: 0; letter-spacing: 0.4px;
+        }}
+        .sidebar-hint + div[data-testid="stDivider"] {{
+            margin-top: 10px;
+            margin-bottom: 12px;
         }}
         .sidebar-brand::before {{
             content: ""; display: inline-block; width: 10px; height: 10px;
@@ -261,7 +371,11 @@ def inject_css() -> None:
             background: #FFFFFF !important; color: {INK} !important;
         }}
         div[data-testid="stExpander"] {{
-            background: #FFFFFF; color: {INK}; border-color: {BORDER};
+            background: rgba(255, 255, 255, 0.80); color: {INK};
+            border-color: rgba(214, 222, 217, 0.82);
+            box-shadow: 0 6px 18px rgba(9, 47, 32, 0.08);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
         }}
         div[data-testid="stExpander"] summary *,
         div[data-testid="stCheckbox"] label *,
@@ -301,8 +415,12 @@ def inject_css() -> None:
 
         /* ---------- карточки-метрики ---------- */
         div[data-testid="stMetric"] {{
-            background: {SURFACE}; border: 1px solid {BORDER};
-            border-radius: 6px; padding: 14px 16px 10px 16px;
+            background: rgba(255, 255, 255, 0.78);
+            border: 1px solid rgba(214, 222, 217, 0.82);
+            border-radius: 8px; padding: 14px 16px 10px 16px;
+            box-shadow: 0 6px 18px rgba(9, 47, 32, 0.08);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
         }}
         div[data-testid="stMetricLabel"] p {{
             color: {INK_MUTED}; font-size: 12px; font-weight: 600;
@@ -315,8 +433,9 @@ def inject_css() -> None:
 
         /* ---------- таблицы, canvas-grid и графики ---------- */
         div[data-testid="stDataFrame"] {{
-            background: #FFFFFF; color: {INK};
-            border: 1px solid {BORDER}; border-radius: 6px;
+            background: rgba(255, 255, 255, 0.88); color: {INK};
+            border: 1px solid {BORDER}; border-radius: 8px;
+            box-shadow: 0 6px 18px rgba(9, 47, 32, 0.08);
         }}
         div[data-testid="stDataFrame"] *,
         div[data-testid="stDataFrame"] [role="columnheader"],
@@ -340,9 +459,13 @@ def inject_css() -> None:
 
         /* ---------- информационные блоки ---------- */
         .note-box {{
-            background: {SURFACE}; border: 1px solid {BORDER};
+            background: rgba(255, 255, 255, 0.78);
+            border: 1px solid rgba(214, 222, 217, 0.82);
             border-left: 4px solid {GREEN_700};
-            border-radius: 4px; padding: 12px 16px; font-size: 14px;
+            border-radius: 8px; padding: 12px 16px; font-size: 14px;
+            box-shadow: 0 6px 18px rgba(9, 47, 32, 0.08);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
         }}
         .legend-chip {{
             display: inline-block; margin-right: 22px;
@@ -670,6 +793,41 @@ def diagnose_frame(
 @st.cache_data(show_spinner=False)
 def demo_fund() -> list[DiagnosisResult]:
     return [diagnose(c) for c in galit.synthetic.make_fund(40)]
+
+
+def build_master_plan(cases_by_name: dict[str, WellCase], results: list[DiagnosisResult]):
+    """Связать result→case по нормализованному имени без молчаливой потери строк."""
+    normalised_cases: dict[str, WellCase] = {}
+    for case in cases_by_name.values():
+        key = " ".join(case.name.strip().casefold().split())
+        if key in normalised_cases:
+            raise ValueError(f"Дублирующееся имя скважины в исходных данных: {case.name}")
+        normalised_cases[key] = case
+
+    diagnosed: list[DiagnosedWell] = []
+    for result in results:
+        key = " ".join(result.well.strip().casefold().split())
+        case = normalised_cases.get(key)
+        if case is None:
+            raise ValueError(f"Для результата не найден исходный кейс: {result.well}")
+        diagnosed.append(DiagnosedWell(case, result))
+    return generate_master_plan(diagnosed)
+
+def master_plan_frame(plan: Any) -> pd.DataFrame:
+    """Русская плоская таблица плана для UI и CSV без дублирования правил."""
+    return pd.DataFrame([{
+        "Скважина": task.well,
+        "Осложнение": task.dominant_label,
+        "Риск": task.risk,
+        "Возможная потеря, м³/сут": task.possible_oil_loss.central_m3d,
+        "Срок": task.response_deadline,
+        "Действие": task.recommended_action,
+        "Safe-to-act": "да" if task.safe_to_act else "нет — нужна верификация",
+    } for task in plan.tasks])
+
+
+def master_plan_csv(plan: Any) -> bytes:
+    return master_plan_frame(plan).to_csv(index=False).encode("utf-8-sig")
 
 
 # ==========================================================================
@@ -1013,6 +1171,73 @@ def fig_profiles(results: list[DiagnosisResult], labels: list[str],
     return fig
 
 
+FORECAST_HISTORY_COLUMNS = (
+    "well", "timestamp", "wax_severity", "halite_severity", "calcite_severity",
+    "corrosion_wall_loss_mm", "oil_rate_m3_day", "quality", "source",
+)
+
+
+def forecast_history_from_csv(data: bytes) -> galit.ForecastHistory:
+    """Parse documented temporal CSV; timestamps must carry an explicit timezone."""
+    frame = pd.read_csv(io.BytesIO(data))
+    missing = {"well", "timestamp"} - set(frame.columns)
+    if missing:
+        raise ValueError("Forecast history CSV: missing columns " + ", ".join(sorted(missing)))
+    snapshots = []
+    numeric = set(FORECAST_HISTORY_COLUMNS[2:7])
+    for index, row in frame.iterrows():
+        timestamp = pd.Timestamp(row["timestamp"])
+        if timestamp.tzinfo is None:
+            raise ValueError(f"Forecast history row {index + 2}: timestamp must include timezone")
+        values: dict[str, Any] = {"well": str(row["well"]), "timestamp": timestamp.to_pydatetime()}
+        for column in numeric:
+            if column in frame.columns and pd.notna(row.get(column)):
+                values[column] = float(row[column])
+        for column, default in (("quality", "good"), ("source", "measured")):
+            values[column] = str(row[column]) if column in frame.columns and pd.notna(row[column]) else default
+        snapshots.append(galit.ForecastSnapshot(**values))
+    return galit.ForecastHistory(tuple(snapshots))
+
+
+def fig_forecast_timeline(forecast: galit.WellForecast) -> go.Figure:
+    """Render only events whose contract actually supplies a dated window."""
+    dated = [event for event in forecast.events if event.horizon_start_date is not None]
+    fig = go.Figure()
+    for event in dated:
+        start = event.horizon_start_date
+        end = event.horizon_end_date or start
+        fig.add_trace(go.Bar(
+            x=[max((end - start).days, 0) + 1], y=[event.title], base=[start],
+            orientation="h", name=event.status.value, showlegend=False,
+            marker_color=GREEN_700 if event.status.value == "calibrated" else STATUS_WARN,
+            customdata=[[start.isoformat(), end.isoformat(), event.status.value]],
+            hovertemplate="%{y}<br>%{customdata[0]} — %{customdata[1]}<br>%{customdata[2]}<extra></extra>",
+        ))
+    fig.update_layout(height=max(220, 65 * len(dated)), barmode="overlay",
+                      xaxis_title="Календарное окно", yaxis_title="",
+                      font=dict(family=FONT_FAMILY, color=INK),
+                      paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+                      margin=dict(l=10, r=10, t=20, b=10))
+    return fig
+
+
+def forecast_event_frame(events: list[galit.ForecastEvent] | tuple[galit.ForecastEvent, ...]) -> pd.DataFrame:
+    rows = []
+    for event in events:
+        window = "дата недоступна"
+        if event.horizon_start_date is not None:
+            window = (event.horizon_start_date.isoformat() if event.horizon_start_date == event.horizon_end_date
+                      else f"{event.horizon_start_date.isoformat()} — {event.horizon_end_date.isoformat()}")
+        band = "—" if event.risk_band is None else f"{event.risk_band[0]:.2f}–{event.risk_band[1]:.2f}"
+        rows.append({"Событие": event.title, "Статус": event.status.value,
+                     "Ожидаемое окно": window, "Likelihood": event.likelihood.value,
+                     "Risk band": band, "Actionable": "да" if event.actionable else "нет",
+                     "Basis": event.basis, "Assumptions": "; ".join(event.assumptions) or "—",
+                     "Limitations": "; ".join(event.limitations) or "—",
+                     "Required inputs": "; ".join(event.required_inputs) or "—"})
+    return pd.DataFrame(rows)
+
+
 def fig_severity(detail: DiagnosisResult) -> go.Figure:
     """Вклад механизмов в риск по одной скважине."""
     mechanisms = ["halite", "calcite", "wax", "corrosion"]
@@ -1047,14 +1272,22 @@ def fig_severity(detail: DiagnosisResult) -> go.Figure:
 
 
 def render_header() -> None:
+    logo_uri = local_image_data_uri(HEADER_LOGO_ASSET)
+    logo_html = (
+        f'<img class="app-header-logo" src="{logo_uri}" alt="Логотип ГАЛИТ">'
+        if logo_uri else ""
+    )
     st.markdown(
         f"""
         <div class="app-header">
-            <div class="app-title">ГАЛИТ</div>
-            <div class="app-subtitle">
-                Интегрированная диагностика осложнений: галит · кальцит · АСПО ·
-                коррозия. Ранжирование фонда и профили T(z), P(z).
+            <div class="app-header-text">
+                <div class="app-title">ГАЛИТ</div>
+                <div class="app-subtitle">
+                    Интегрированная диагностика осложнений: галит · кальцит · АСПО ·
+                    коррозия. Ранжирование фонда и профили T(z), P(z).
+                </div>
             </div>
+            {logo_html}
         </div>
         <hr class="app-rule">
         """,
@@ -1117,6 +1350,27 @@ def render_sidebar():
         )
         if upload is not None:
             st.session_state["demo"] = False
+
+        history_upload = st.file_uploader(
+            "История наблюдений для прогноза (CSV, optional)", type=["csv"],
+            key="forecast_history",
+            help=("Schema: well,timestamp,wax_severity,halite_severity,calcite_severity,"
+                  "corrosion_wall_loss_mm,oil_rate_m3_day,quality,source. "
+                  "timestamp — ISO 8601 с timezone; пустые metrics разрешены."),
+        )
+        st.session_state["forecast_history_bytes"] = (
+            history_upload.getvalue() if history_upload is not None else None
+        )
+        with st.expander("Коррозия: измеренный запас стенки (optional)"):
+            use_wall = st.checkbox("Есть инструментальные замеры", value=False)
+            if use_wall:
+                st.number_input("Текущая толщина стенки, мм", min_value=0.0, value=0.0,
+                                key="forecast_wall_current")
+                st.number_input("Минимально допустимая толщина, мм", min_value=0.0, value=0.0,
+                                key="forecast_wall_minimum")
+            else:
+                st.session_state["forecast_wall_current"] = None
+                st.session_state["forecast_wall_minimum"] = None
 
         artifact_upload = st.file_uploader(
             "Calibration artifact (JSON, optional)", type=["json"],
@@ -1261,6 +1515,14 @@ def main() -> None:
     else:
         st.success("PRODUCTION-READY по критериям качества входов ядра GALIT.")
 
+    # --- доменный план мастера для отдельной вкладки ---
+    plan = None
+    plan_error: str | None = None
+    try:
+        plan = build_master_plan(cases_by_name, results)
+    except Exception as exc:  # UI boundary: the other diagnostic tabs must remain usable.
+        plan_error = str(exc)
+
     # --- ключевые показатели фонда ---
     risks = [r.integrated_risk for r in results]
     crit = sum(1 for r in risks if r >= RISK_CRIT)
@@ -1276,10 +1538,47 @@ def main() -> None:
                 help=f"Чаще всего лидирует: {dominant_counts.index[0]}")
 
     st.divider()
-    tab_rank, tab_profiles, tab_well, tab_pilot = st.tabs(
-        ["Ранжирование фонда", "Профили T(z) · P(z)", "Детально по скважине",
-         "Сравнение с baseline / Пилот"]
+    tab_plan, tab_rank, tab_profiles, tab_well, tab_forecast, tab_pilot = st.tabs(
+        ["План мастера", "Ранжирование фонда", "Профили T(z) · P(z)",
+         "Детально по скважине", "Прогноз во времени", "Сравнение с baseline / Пилот"]
     )
+
+    # --- первая вкладка: тот же уже сформированный доменный план ---
+    with tab_plan:
+        if plan is None:
+            st.error(
+                "План мастера не сформирован. Остальные результаты доступны; "
+                "проверьте сопоставление исходных строк и повторите расчёт."
+            )
+            if plan_error:
+                st.caption(f"Техническая причина: {plan_error}")
+        else:
+            loss = plan.summary.possible_oil_loss_central_m3d
+            p1, p2, p3 = st.columns(3)
+            p1.metric("Всего задач", plan.summary.task_count)
+            p2.metric("Срочных", sum(task.response_deadline in {"немедленно", "24ч"} for task in plan.tasks))
+            p3.metric("Потенциальная потеря", "—" if loss is None else f"{loss:.1f} м³/сут")
+            st.caption(plan.advisory_notice)
+            frame = master_plan_frame(plan)
+            st.dataframe(frame, width="stretch", hide_index=True)
+            st.download_button(
+                "Скачать план CSV", master_plan_csv(plan), file_name="galit_master_plan.csv",
+                mime="text/csv",
+            )
+        if plan is not None and plan.tasks:
+            selected_well = st.selectbox(
+                "Задание для подробного просмотра", [task.well for task in plan.tasks],
+                key="master_plan_task",
+            )
+            task = next(item for item in plan.tasks if item.well == selected_well)
+            if not task.safe_to_act:
+                st.error("Действие заблокировано: сначала верифицируйте качество данных и повторите диагностику.")
+            st.markdown(f"**Причины приоритета:** {'; '.join(task.priority_reasons)}")
+            st.markdown(f"**Checklist:**  " + "  \n".join(f"- {item}" for item in task.pre_trip_checklist))
+            st.markdown(f"**Материалы:** {', '.join(task.materials)}")
+            st.markdown(f"**Оборудование:** {', '.join(task.equipment)}")
+            if task.quality_warnings:
+                st.warning("Предупреждения качества: " + "; ".join(task.quality_warnings))
 
     # --- вкладка 1: рейтинг ---
     with tab_rank:
@@ -1406,6 +1705,51 @@ def main() -> None:
             with st.expander("Оригинальные технические warnings"):
                 for warning in detail.warnings:
                     st.code(warning, language=None)
+
+    # --- прогноз: временной контракт отделён от snapshot-диагностики ---
+    with tab_forecast:
+        st.warning("SCREENING: временные окна — сценарии, не гарантированные даты или вероятности отказа.")
+        forecast_well_name = st.selectbox("Скважина для прогноза", list(cases_by_name),
+                                          key="forecast_well")
+        case = cases_by_name[forecast_well_name]
+        result = next(item for item in results if item.well == forecast_well_name)
+        as_of = datetime.now(timezone.utc)
+        history = None
+        history_bytes = st.session_state.get("forecast_history_bytes")
+        try:
+            if history_bytes:
+                parsed = forecast_history_from_csv(history_bytes)
+                history = galit.ForecastHistory(tuple(
+                    item for item in parsed.snapshots if item.well == forecast_well_name
+                ))
+            current = st.session_state.get("forecast_wall_current")
+            minimum = st.session_state.get("forecast_wall_minimum")
+            integrity = None
+            if current is not None and minimum is not None:
+                integrity = galit.CorrosionIntegrityInput(float(current), float(minimum), as_of)
+            forecast = galit.forecast_well(result, case, history=history, as_of=as_of,
+                                            corrosion_integrity=integrity)
+            if source_is_demo:
+                st.error("ДЕМО · СЦЕНАРНЫЙ ПРОГНОЗ · SYNTHETIC · NOT FIELD VALIDATED")
+            if not history_bytes:
+                st.info("Фонд использован только как snapshot. Временная история не загружена; недоступные окна не дорисовываются.")
+            dated = [event for event in forecast.events if event.horizon_start_date is not None]
+            undated = [event for event in forecast.events if event.horizon_start_date is None]
+            if dated:
+                st.plotly_chart(fig_forecast_timeline(forecast), width="stretch",
+                                config={"displaylogo": False})
+            else:
+                st.info("Датированных событий нет: контракт вернул только screening/unavailable без временных окон.")
+            st.markdown("### Все события и основания")
+            st.dataframe(forecast_event_frame(forecast.events), width="stretch", hide_index=True)
+            if undated:
+                st.markdown("### Без даты — отдельно от timeline")
+                st.dataframe(forecast_event_frame(undated), width="stretch", hide_index=True)
+        except (ValueError, KeyError) as exc:
+            st.error(f"Прогноз не рассчитан: {exc}")
+        with st.expander("CSV schema истории"):
+            st.code(",".join(FORECAST_HISTORY_COLUMNS), language=None)
+            st.caption("timestamp: ISO 8601 с timezone; severity 0..1; wall loss/rate ≥ 0; quality good/questionable/bad; source measured/derived/laboratory.")
 
     # --- вкладка 4: outcomes-based pilot, отдельно от recommendations ---
     with tab_pilot:

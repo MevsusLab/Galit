@@ -229,11 +229,13 @@ OpenAPI: `http://127.0.0.1:8000/docs`. Пример входа —
 `postman/collections/GALIT API/`.
 
 Контракты: `GET /api/v1/health`, `GET /api/v1/readiness`,
-`POST /api/v1/diagnose`, `POST /api/v1/diagnose/bulk`. Bulk ограничен
-`GALIT_MAX_BATCH_SIZE` (по умолчанию 25), возвращает per-item success/error;
-превышение лимита — 413, невалидный envelope — 422. Расширенная metadata
-в single включается `include_metadata=true`, подробные профили — только
-`include_profiles=true`. Каждый ответ содержит `X-Request-ID`.
+`POST /api/v1/diagnose`, `POST /api/v1/diagnose/bulk`,
+`POST /api/v1/master-plan`. Bulk и master-plan ограничены
+`GALIT_MAX_BATCH_SIZE` (по умолчанию 25) и работают по политике partial
+success: валидные строки рассчитываются, ошибки остальных возвращаются
+поэлементно; превышение лимита — 413, пустой/невалидный envelope — 422.
+Расширенная metadata в single включается `include_metadata=true`, подробные
+профили — только `include_profiles=true`. Каждый ответ содержит `X-Request-ID`.
 
 CORS по умолчанию запрещён; разрешённые origin задаются явным списком
 `GALIT_CORS_ORIGINS=https://ui.example`. Wildcard запрещён. API не логирует
@@ -250,6 +252,146 @@ docker run --rm -p 8000:8000 galit-api
 Контейнер работает non-root и имеет healthcheck; `.dockerignore` исключает
 `.env`, сырые `data`, `reports` и calibration artifacts. Если Docker недоступен,
 используйте `python -m compileall`, pytest и статические тесты упаковки.
+
+### План мастера на сегодня
+
+Функция превращает результаты диагностики фонда в воспроизводимую очередь
+задач. Сначала исключаются строки ниже `min_risk`, затем дубли скважин
+(без учёта регистра и повторных пробелов) сводятся к результату с наибольшим
+риском, после чего задачи сортируются по классу срочности, убыванию риска и
+имени. `limit` применяется только после сортировки; `0` означает пустой план.
+Пороги: `>=0.75` — немедленно, `>=0.60` — 24 ч, `>=0.45` — 48 ч,
+`>=0.35` — 72 ч, ниже — планово.
+
+`possible_oil_loss.lower_m3d/central_m3d/upper_m3d` — **screening estimate**
+добычи под риском: дебит нефти умножается на сценарные p05/p50/p95 risk score,
+а без uncertainty используется диапазон 0.5×/1×/1.5× score с ограничением
+0…1. Это не вероятность отказа и не прогноз фактической потери; без полевой
+калибровки показатель годится только для сравнительного ранжирования.
+
+Основные поля задачи: `priority`, `level`, `risk`, `dominant`, `response_deadline`,
+`recommended_action`, `pre_trip_checklist`, `materials`, `equipment`,
+`quality_warnings`, `production_ready`, `safe_to_act`. Если quality gate не
+пройден, `safe_to_act=false`, а воздействие явно блокируется. Даже при
+`safe_to_act=true` обязательны проверка фактических данных, HSE-оценка,
+совместимость жидкостей/реагентов, наряд-допуск, утверждённая технологическая
+карта и решение ответственного лица; функция не назначает дозировки.
+
+**Dashboard:** загрузите фонд и откройте вкладку «План мастера на сегодня».
+Доступны KPI, очередь задач, подробный checklist и выгрузка CSV. Пустая очередь
+является штатным результатом фильтрации, а не ошибкой.
+
+**API:** тело — непустой JSON-массив объектов того же формата, что
+`POST /api/v1/diagnose`:
+
+```http
+POST /api/v1/master-plan?plan_date=2026-08-23&min_risk=0.10&limit=10
+Content-Type: application/json
+
+[{"name":"Well-1","geometry":{"depth_m":3200,"tubing_id_m":0.062},
+  "rate":{"q_oil_m3d":8,"q_water_m3d":72,"gor_m3m3":65},
+  "fluid":{"gamma_oil":0.86,"gamma_gas":0.78,"salinity_ppm":290000},
+  "thermal":{"t_surface_c":8,"geothermal_grad":0.033,"u_to":15,"production_days":400},
+  "water":{"ions_mg_l":{"Na":95000,"Cl":205000,"Ca":28000,"HCO3":130},"ph":6,"t_c":40,"p_pa":5000000},
+  "wax":{"wat_stock_tank_c":34,"wax_content_pct":6.5}}]
+```
+
+Сокращённый ответ:
+
+```json
+{"policy":{"mode":"partial","min_risk":0.1},"plan_date":"2026-08-23",
+ "summary":{"task_count":1,"blocked_tasks":1},
+ "tasks":[{"well":"Well-1","priority":4,"risk":0.4,"safe_to_act":false,
+ "possible_oil_loss":{"central_m3d":3.2}}],"errors":[],
+ "advisory_notice":"План предназначен для приоритизации…"}
+```
+
+Неверная дата и `min_risk` вне 0…1 дают 422; превышение batch limit — 413.
+При partial success ошибки отдельных строк возвращаются в `errors`, а план
+строится из успешных строк; если успешных строк нет, возвращается пустой план.
+
+**Telegram:** `/plan` строит компактный план по последним успешным расчётам
+текущего чата, `/plan_clear` очищает только историю этого чата. История
+in-memory: максимум 20 расчётов на чат и 500 недавно активных чатов, без
+межпроцессной синхронизации и постоянного хранилища; она исчезает при
+перезапуске, не разделяется между несколькими worker-процессами. Расчёты
+выполняются через `asyncio.to_thread`; сообщения режутся на части короче
+Telegram-лимита 4096 символов.
+
+### Прогноз осложнений во времени
+
+`forecast_well` и `POST /api/v1/forecast` возвращают пять событий: АСПО, галит,
+кальцит, коррозионный порог и снижение добычи. Статусы означают:
+
+- `unavailable` — данных недостаточно для честного временного окна; дата и
+  вероятность намеренно отсутствуют;
+- `screening` — сценарное окно или качественная категория для предварительного
+  скрининга, **не** точная вероятность и не гарантированная дата отказа;
+- `calibrated` — статус разрешён только при holdout-validated артефакте с
+  достаточным объёмом независимой выборки, приемлемым Brier score и совпадающим
+  `dataset_id`. Вероятность появляется только если она явно записана в артефакте.
+
+Без временной истории текущая тяжесть — это snapshot, а не часы до события,
+поэтому часть дат недоступна. Для тренда нужны минимум четыре качественных
+наблюдения, достаточный временной span и устойчивое направление. Будущие строки,
+чужие скважины и будущие observed events отклоняются, чтобы исключить leakage;
+одинаковые timestamps агрегируются медианой по метрике.
+
+**CSV истории для сайта:**
+
+```csv
+well,timestamp,wax_severity,halite_severity,calcite_severity,corrosion_wall_loss_mm,oil_rate_m3_day,quality,source
+Well-1,2026-07-14T12:00:00+00:00,0.20,0.10,0.15,0.05,100.0,good,measured
+Well-1,2026-07-24T12:00:00+00:00,0.30,0.12,0.18,0.07,96.0,good,measured
+```
+
+`timestamp` — ISO 8601 с timezone; severity — 0…1; wall loss и дебит — конечные
+неотрицательные числа; `quality`: `good|questionable|bad`; `source`:
+`measured|derived|laboratory`. После upload фонда или запуска demo откройте
+вкладку «Прогноз во времени», выберите скважину и загрузите CSV истории в
+боковой панели. Timeline показывает только события с реальным расчётным окном;
+недатированные события остаются в отдельной таблице.
+
+Для коррозионной даты нужен **резерв стенки**:
+`current_wall_thickness_mm - minimum_allowable_wall_thickness_mm`, где обе
+толщины измерены и первая больше минимально допустимой. Одна модельная скорость
+коррозии не является оценкой остаточного ресурса и не учитывает локальный питтинг.
+
+**API:**
+
+```http
+POST /api/v1/forecast
+Content-Type: application/json
+
+{"well":{"name":"Well-1","geometry":{"depth_m":3200,"tubing_id_m":0.062},
+"rate":{"q_oil_m3d":100,"q_water_m3d":72,"gor_m3m3":65},
+"fluid":{"gamma_oil":0.86,"gamma_gas":0.78,"salinity_ppm":290000},
+"thermal":{"t_surface_c":8,"geothermal_grad":0.033,"u_to":15,"production_days":400},
+"water":{"ions_mg_l":{"Na":95000,"Cl":205000,"Ca":28000,"HCO3":130},"ph":6,"t_c":40,"p_pa":5000000},
+"wax":{"wat_stock_tank_c":34,"wax_content_pct":6.5}},
+"as_of":"2026-08-23T12:00:00+00:00","history_snapshots":[],"observed_events":[]}
+```
+
+Сокращённый ответ:
+
+```json
+{"well":"Well-1","as_of":"2026-08-23T12:00:00Z",
+ "summary":{"total":5,"unavailable":2,"screening":3,"calibrated":0},
+ "events":[{"mechanism":"wax","status":"screening",
+ "horizon_start_date":null,"horizon_end_date":null,"probability":null}],
+ "advisory_notice":"Screening windows are scenarios, not guaranteed event dates or failure probabilities."}
+```
+
+**Telegram:** `/forecast` показывает прогноз для последнего успешного расчёта
+этого чата, `/forecast Well-1` — для последнего точного совпадения имени после
+Unicode/case/whitespace-нормализации. Это bounded in-memory история диагностик,
+а не временной ряд измерений: она очищается при перезапуске и не создаёт дат или
+вероятностей. Сначала выполните `/aspo` или пошаговый расчёт.
+
+> Ограничение и disclaimer: прогноз предназначен для screening и поддержки
+> инженерного решения. Он не является сертификатом остаточного ресурса,
+> автоматическим управлением, гарантией даты отказа или заменой промысловых
+> исследований, HSE-проверки и решения ответственного специалиста.
 
 ---
 

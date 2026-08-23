@@ -1,0 +1,70 @@
+$kind: http-request
+method: POST
+url: '{{baseUrl}}/api/v1/forecast'
+order: 6000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "well": {
+        "name": "Synthetic forecast 001",
+        "geometry": {"depth_m": 3200.0, "tubing_id_m": 0.062, "inclination_deg": 15.0},
+        "rate": {"q_oil_m3d": 100.0, "q_water_m3d": 72.0, "gor_m3m3": 65.0},
+        "fluid": {"gamma_oil": 0.86, "gamma_gas": 0.78, "salinity_ppm": 290000.0},
+        "thermal": {"t_surface_c": 8.0, "geothermal_grad": 0.033, "u_to": 15.0, "production_days": 400.0},
+        "water": {"ions_mg_l": {"Na": 95000.0, "Cl": 205000.0, "Ca": 28000.0, "Mg": 3100.0, "K": 1800.0, "HCO3": 130.0, "SO4": 250.0}, "ph": 6.0, "t_c": 40.0, "p_pa": 5000000.0},
+        "wax": {"wat_stock_tank_c": 34.0, "wax_content_pct": 6.5},
+        "co2_mol_frac": 0.012,
+        "inhibitor_efficiency": 0.0,
+        "lift_type": "ESP",
+        "p_wellhead_pa": 1400000.0
+      },
+      "as_of": "2026-08-23T12:00:00+00:00",
+      "dataset_id": "synthetic-forecast-history-v1",
+      "history_snapshots": [
+        {"well": "Synthetic forecast 001", "timestamp": "2026-07-14T12:00:00+00:00", "wax_severity": 0.20, "oil_rate_m3_day": 100.0, "quality": "good", "source": "measured"},
+        {"well": "Synthetic forecast 001", "timestamp": "2026-07-24T12:00:00+00:00", "wax_severity": 0.30, "oil_rate_m3_day": 96.0, "quality": "good", "source": "measured"},
+        {"well": "Synthetic forecast 001", "timestamp": "2026-08-03T12:00:00+00:00", "wax_severity": 0.40, "oil_rate_m3_day": 92.0, "quality": "good", "source": "measured"},
+        {"well": "Synthetic forecast 001", "timestamp": "2026-08-13T12:00:00+00:00", "wax_severity": 0.50, "oil_rate_m3_day": 88.0, "quality": "good", "source": "measured"}
+      ],
+      "observed_events": [],
+      "corrosion_integrity": {
+        "current_wall_thickness_mm": 6.0,
+        "minimum_allowable_wall_thickness_mm": 5.5,
+        "measured_at": "2026-08-20T12:00:00+00:00",
+        "source": "measured"
+      }
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status code is 200", () => pm.response.to.have.status(200));
+      const body = pm.response.json();
+      pm.test("Summary and events essentials are present", () => {
+        pm.expect(body.summary).to.be.an("object");
+        pm.expect(body.events).to.be.an("array").with.lengthOf(5);
+        pm.expect(body.summary.total).to.eql(body.events.length);
+        body.events.forEach((event) => {
+          pm.expect(event.id).to.be.a("string").and.not.empty;
+          pm.expect(event.mechanism).to.be.a("string").and.not.empty;
+          pm.expect(event.basis).to.be.a("string").and.not.empty;
+        });
+      });
+      pm.test("Forecast statuses are valid", () => {
+        const valid = ["unavailable", "screening", "calibrated"];
+        body.events.forEach((event) => pm.expect(valid).to.include(event.status));
+      });
+      pm.test("Screening and unavailable events have no probability", () => {
+        body.events.filter((event) => event.status !== "calibrated")
+          .forEach((event) => pm.expect(event.probability).to.eql(null));
+      });
+      pm.test("Dated events have ordered dates", () => {
+        body.events.filter((event) => event.horizon_start_date !== null).forEach((event) => {
+          pm.expect(event.horizon_end_date).to.not.eql(null);
+          pm.expect(Date.parse(event.horizon_start_date)).to.be.at.most(Date.parse(event.horizon_end_date));
+        });
+      });

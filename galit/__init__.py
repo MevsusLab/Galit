@@ -25,6 +25,31 @@ from .integrated import (
     diagnose,
     rank_wells,
 )
+from .forecast import (
+    CorrosionIntegrityInput,
+    ForecastCalibrationEvidence,
+    ForecastConfig,
+    ForecastEvent,
+    ForecastHistory,
+    ForecastMechanism,
+    ForecastSnapshot,
+    ForecastStatus,
+    ForecastSummary,
+    LikelihoodCategory,
+    ObservedForecastEvent,
+    WellForecast,
+    forecast_well,
+)
+from .master_plan import (
+    DEFAULT_MASTER_PLAN_POLICY,
+    DiagnosedWell,
+    MasterPlan,
+    MasterPlanPolicy,
+    MasterPlanSummary,
+    MasterTask,
+    OilLossEstimate,
+    generate_master_plan,
+)
 from .scale import WaterAnalysis, halite_saturation_index, stiff_davis_index
 from .wax import WaxProperties, wax_onset_depth
 from .wellbore import (
@@ -37,13 +62,33 @@ from .wellbore import (
 )
 
 __all__ = [
+    "CorrosionIntegrityInput",
+    "ForecastCalibrationEvidence",
+    "ForecastConfig",
+    "ForecastEvent",
+    "ForecastHistory",
+    "ForecastMechanism",
+    "ForecastSnapshot",
+    "ForecastStatus",
+    "ForecastSummary",
+    "LikelihoodCategory",
+    "ObservedForecastEvent",
+    "WellForecast",
+    "forecast_well",
     "BASELINE_CALIBRATION",
     "CorrosionConditions",
     "DataProvenance",
     "DataQuality",
     "DataQualityError",
     "DEFAULT_RISK_POLICY",
+    "DEFAULT_MASTER_PLAN_POLICY",
+    "DiagnosedWell",
     "DiagnosisResult",
+    "MasterPlan",
+    "MasterPlanPolicy",
+    "MasterPlanSummary",
+    "MasterTask",
+    "OilLossEstimate",
     "MECHANISM_WEIGHTS",
     "RiskPolicy",
     "RuntimeCalibration",
@@ -61,6 +106,7 @@ __all__ = [
     "corrosion_rate_1995",
     "corrosion_severity",
     "diagnose",
+    "generate_master_plan",
     "halite_saturation_index",
     "pressure_profile",
     "rank_wells",

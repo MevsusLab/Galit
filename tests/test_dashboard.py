@@ -11,7 +11,9 @@ from pathlib import Path
 import re
 
 import pandas as pd
+import pytest
 from pandas.io.formats.style import Styler
+from streamlit.testing.v1 import AppTest
 
 import dashboard
 from galit import diagnose
@@ -260,6 +262,48 @@ def test_pilot_dashboard_helpers():
     assert len(frame) == 3 and "NDCG@K" in frame.columns
 
 
+def test_master_plan_helpers_use_current_cases_and_export_russian_csv():
+    cases = dashboard.galit.synthetic.make_fund(3, seed=19)
+    results = [diagnose(case) for case in cases]
+    plan = dashboard.build_master_plan({case.name: case for case in cases}, results)
+    frame = dashboard.master_plan_frame(plan)
+    assert list(frame.columns) == [
+        "Скважина", "Осложнение", "Риск", "Возможная потеря, м³/сут",
+        "Срок", "Действие", "Safe-to-act",
+    ]
+    csv = dashboard.master_plan_csv(plan).decode("utf-8-sig")
+    assert "Скважина" in csv and "Safe-to-act" in csv
+
+
+# --------------------------------------------- Streamlit upload regression
+
+def test_apptest_initial_state_is_welcome_without_tabs_or_auto_demo():
+    app = AppTest.from_file(str(Path(dashboard.__file__)), default_timeout=60).run()
+    assert not app.exception
+    assert list(app.tabs) == []
+    assert any("note-box" in item.value for item in app.markdown)
+    assert not any(metric.label == "\u0421\u043a\u0432\u0430\u0436\u0438\u043d \u0432 \u0440\u0430\u0441\u0447\u0451\u0442\u0435" for metric in app.metric)
+
+
+def test_apptest_upload_renders_master_plan_as_first_tab():
+    app = AppTest.from_file(str(Path(dashboard.__file__)), default_timeout=120).run()
+    app.get("file_uploader")[0].set_value(
+        ("valid-fund.csv", MINIMAL_CSV, "text/csv")
+    ).run()
+
+    assert not app.exception
+    assert [tab.label for tab in app.tabs] == [
+        "\u041f\u043b\u0430\u043d \u043c\u0430\u0441\u0442\u0435\u0440\u0430",
+        "\u0420\u0430\u043d\u0436\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0444\u043e\u043d\u0434\u0430",
+        "\u041f\u0440\u043e\u0444\u0438\u043b\u0438 T(z) \u00b7 P(z)",
+        "\u0414\u0435\u0442\u0430\u043b\u044c\u043d\u043e \u043f\u043e \u0441\u043a\u0432\u0430\u0436\u0438\u043d\u0435",
+        "Прогноз во времени",
+        "\u0421\u0440\u0430\u0432\u043d\u0435\u043d\u0438\u0435 \u0441 baseline / \u041f\u0438\u043b\u043e\u0442",
+    ]
+    assert next(metric.value for metric in app.metric if metric.label == "\u0412\u0441\u0435\u0433\u043e \u0437\u0430\u0434\u0430\u0447") == "1"
+    assert any(button.label == "\u0421\u043a\u0430\u0447\u0430\u0442\u044c \u043f\u043b\u0430\u043d CSV" for button in app.get("download_button"))
+
+
 # ------------------------------------------------ accessibility / contrast
 
 def _contrast_ratio(foreground: str, background: str) -> float:
@@ -315,3 +359,34 @@ def test_status_pairs_and_styler_foregrounds_meet_wcag():
     assert f"color: {dashboard.INK}" in html
     assert "color: #FFFFFF" in html
     assert "#2E7D32" not in html and "#B26A00" not in html and "#C62828" not in html
+
+
+# ----------------------------------------------- forecast parser / timeline
+
+def test_forecast_history_parser_requires_timezone_and_preserves_undated():
+    csv = (
+        "well,timestamp,wax_severity,halite_severity,calcite_severity,"
+        "corrosion_wall_loss_mm,oil_rate_m3_day,quality,source\n"
+        "A,2026-08-01T00:00:00+00:00,0.2,,,,8,good,measured\n"
+    ).encode()
+    history = dashboard.forecast_history_from_csv(csv)
+    assert len(history.snapshots) == 1
+    bad = csv.replace(b"+00:00", b"")
+    with pytest.raises(ValueError, match="timezone"):
+        dashboard.forecast_history_from_csv(bad)
+
+    case = dashboard.galit.synthetic.make_fund(1, seed=2)[0]
+    forecast = dashboard.galit.forecast_well(diagnose(case), case)
+    assert all(event.horizon_start_date is None for event in forecast.events)
+    frame = dashboard.forecast_event_frame(forecast.events)
+    assert frame["Ожидаемое окно"].eq("дата недоступна").all()
+    assert len(dashboard.fig_forecast_timeline(forecast).data) == 0
+
+
+def test_apptest_demo_has_six_tabs_including_forecast():
+    app = AppTest.from_file(str(Path(dashboard.__file__)), default_timeout=120).run()
+    button = next(item for item in app.button if item.label == "Демо-фонд (40 скважин)")
+    button.click().run()
+    assert not app.exception
+    labels = [tab.label for tab in app.tabs]
+    assert len(labels) == 6 and "Прогноз во времени" in labels

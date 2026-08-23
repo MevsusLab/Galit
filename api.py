@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import asdict, replace
+from datetime import date, datetime
 import os
 import time
 import uuid
@@ -35,8 +37,10 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import galit
 from galit import (
+    DEFAULT_MASTER_PLAN_POLICY,
     DataProvenance,
     DataQualityError,
+    DiagnosedWell,
     FluidProperties,
     ProductionRate,
     ThermalParams,
@@ -46,6 +50,7 @@ from galit import (
     WellCase,
     WellGeometry,
     diagnose,
+    generate_master_plan,
 )
 from galit.calibration import ParameterSet
 from galit.scale import MW as KNOWN_IONS
@@ -195,6 +200,130 @@ class WellCaseIn(BaseModel):
     p_wellhead_pa: float = Field(
         default=1.2e6, gt=0.0, description="Буферное давление, Па",
     )
+
+
+class ForecastSnapshotIn(BaseModel):
+    well: str = Field(min_length=1)
+    timestamp: datetime
+    wax_severity: float | None = Field(default=None, ge=0, le=1)
+    halite_severity: float | None = Field(default=None, ge=0, le=1)
+    calcite_severity: float | None = Field(default=None, ge=0, le=1)
+    corrosion_wall_loss_mm: float | None = Field(default=None, ge=0)
+    oil_rate_m3_day: float | None = Field(default=None, ge=0)
+    quality: str = Field(default="good", pattern="^(good|questionable|bad)$")
+    source: str = Field(default="measured", pattern="^(measured|derived|laboratory)$")
+
+    @field_validator("timestamp")
+    @classmethod
+    def aware_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamp must include a timezone offset")
+        return value
+
+
+class ObservedForecastEventIn(BaseModel):
+    event_id: str = Field(min_length=1)
+    well: str = Field(min_length=1)
+    timestamp: datetime
+    mechanism: galit.ForecastMechanism
+    outcome: bool = True
+    source: str = Field(default="measured", pattern="^(measured|laboratory)$")
+
+    @field_validator("timestamp")
+    @classmethod
+    def aware_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamp must include a timezone offset")
+        return value
+
+
+class ForecastConfigIn(BaseModel):
+    wax_critical_severity: float = Field(default=.60, ge=0, le=1)
+    halite_deposition_severity: float = Field(default=.60, ge=0, le=1)
+    calcite_deposition_severity: float = Field(default=.60, ge=0, le=1)
+    production_decline_fraction: float = Field(default=.20, ge=0, le=1)
+    min_history_points: int = Field(default=4, ge=3)
+    min_history_span_days: float = Field(default=21, gt=0)
+    max_horizon_days: float = Field(default=365, gt=0, le=3650)
+    minimum_trend_consistency: float = Field(default=.70, ge=0, le=1)
+    corrosion_rate_uncertainty_fraction: float = Field(default=.30, ge=0, le=1)
+    strict_history: bool = True
+
+
+class CorrosionIntegrityIn(BaseModel):
+    current_wall_thickness_mm: float = Field(gt=0)
+    minimum_allowable_wall_thickness_mm: float = Field(ge=0)
+    measured_at: datetime
+    source: str = Field(default="measured", pattern="^(measured|laboratory)$")
+
+    @field_validator("measured_at")
+    @classmethod
+    def aware_measured_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("measured_at must include a timezone offset")
+        return value
+
+
+class ForecastCalibrationIn(BaseModel):
+    artifact_id: str = Field(min_length=1)
+    dataset_id: str = Field(min_length=1)
+    validation_status: str
+    holdout_n: int = Field(ge=0)
+    brier_score: float = Field(ge=0, le=1)
+    mechanisms: list[galit.ForecastMechanism]
+    probabilities: dict[galit.ForecastMechanism, Annotated[float, Field(ge=0, le=1)]] = Field(default_factory=dict)
+    synthetic: bool = False
+
+
+class ForecastRequest(BaseModel):
+    well: WellCaseIn
+    as_of: datetime
+    history_snapshots: list[ForecastSnapshotIn] = Field(default_factory=list, max_length=10000)
+    observed_events: list[ObservedForecastEventIn] = Field(default_factory=list, max_length=10000)
+    dataset_id: str | None = None
+    config: ForecastConfigIn | None = None
+    corrosion_integrity: CorrosionIntegrityIn | None = None
+    calibration_evidence: ForecastCalibrationIn | None = None
+
+    @field_validator("as_of")
+    @classmethod
+    def aware_as_of(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("as_of must include a timezone offset")
+        return value
+
+
+class ForecastEventOut(BaseModel):
+    id: str
+    well: str
+    mechanism: str
+    title: str
+    status: str
+    horizon_start_days: float | None
+    horizon_end_days: float | None
+    horizon_start_date: date | None
+    horizon_end_date: date | None
+    probability: float | None
+    risk_band: tuple[float, float] | None
+    likelihood: str
+    current_risk: float | None
+    threshold: float | None
+    basis: str
+    method: str
+    assumptions: tuple[str, ...]
+    required_inputs: tuple[str, ...]
+    limitations: tuple[str, ...]
+    production_ready: bool
+    actionable: bool
+
+
+class ForecastResponse(BaseModel):
+    well: str
+    as_of: datetime
+    summary: dict[str, Any]
+    events: list[ForecastEventOut]
+    methodology: dict[str, str]
+    advisory_notice: str
 
 
 # --------------------------------------------------------------------------
@@ -397,6 +526,52 @@ async def diagnose_well(
 
 
 @app.post(
+    "/api/v1/forecast", response_model=ForecastResponse, summary="Forecast one well",
+    description=("Honest time-to-event contract. Undated screening/unavailable events remain undated; "
+                 "exact probabilities are returned only from valid holdout calibration evidence."),
+    responses={400: {"description": "Forecast domain validation error"},
+               422: {"description": "Request schema validation error"}},
+)
+async def forecast_endpoint(payload: ForecastRequest) -> ForecastResponse:
+    try:
+        case = _to_well_case(payload.well)
+        diagnosis = await run_in_threadpool(
+            diagnose, case, False, None, None, SERVER_RUNTIME_CALIBRATION,
+        )
+        history = galit.ForecastHistory(
+            snapshots=tuple(galit.ForecastSnapshot(**item.model_dump())
+                            for item in payload.history_snapshots),
+            events=tuple(galit.ObservedForecastEvent(**item.model_dump())
+                         for item in payload.observed_events),
+            dataset_id=payload.dataset_id,
+        )
+        config = galit.ForecastConfig(**payload.config.model_dump()) if payload.config else None
+        integrity = (galit.CorrosionIntegrityInput(**payload.corrosion_integrity.model_dump())
+                     if payload.corrosion_integrity else None)
+        calibration = (galit.ForecastCalibrationEvidence(
+            **payload.calibration_evidence.model_dump()) if payload.calibration_evidence else None)
+        forecast = await run_in_threadpool(
+            galit.forecast_well, diagnosis, case, history=history, as_of=payload.as_of,
+            config=config, corrosion_integrity=integrity, calibration=calibration,
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    return ForecastResponse(
+        well=forecast.well,
+        as_of=payload.as_of,
+        summary=asdict(forecast.summary),
+        events=[ForecastEventOut(**asdict(event)) for event in forecast.events],
+        methodology={
+            "module": "galit.forecast.v1",
+            "temporal_method": "Theil-Sen trend with scenario bounds where sufficient history exists",
+            "calibration_gate": "holdout-validated evidence only",
+        },
+        advisory_notice=("Screening windows are scenarios, not guaranteed event dates or failure probabilities. "
+                         "Unavailable events intentionally contain no fabricated dates."),
+    )
+
+
+@app.post(
     "/api/v1/diagnose/bulk", response_model=None, summary="Diagnose a bounded well batch",
     description=("Each item is validated and calculated independently. Item errors do not abort "
                  "the batch. An empty/non-array envelope is 422; exceeding the configured limit is 413."),
@@ -439,6 +614,70 @@ async def diagnose_bulk(
             "max_batch_size": MAX_BATCH_SIZE, "items": items,
             "policy": {"id": "server-selected", "request_overrides": False},
             "evidence_labels": EVIDENCE_LABELS}
+
+
+@app.post(
+    "/api/v1/master-plan", response_model=None, summary="Build a master plan for a well batch",
+    description=("Partial-success policy: every well is validated and calculated independently; "
+                 "successful wells form the plan and item-level errors are returned in errors. "
+                 "Loss values are screening estimates for prioritisation, not failure forecasts."),
+    responses={413: {"description": "Batch exceeds GALIT_MAX_BATCH_SIZE"},
+               422: {"description": "Payload must be a non-empty JSON array"}},
+)
+async def master_plan(
+    payload: list[Any],
+    plan_date: date | None = None,
+    min_risk: float = Query(default=0.10, ge=0.0, le=1.0),
+    limit: int | None = Query(default=None, ge=0),
+    production_mode: bool = False,
+) -> dict[str, Any]:
+    if not payload:
+        raise HTTPException(422, detail="master-plan payload must contain at least one item")
+    if len(payload) > MAX_BATCH_SIZE:
+        raise HTTPException(413, detail={"message": "batch size exceeds configured limit",
+                                         "max_batch_size": MAX_BATCH_SIZE, "received": len(payload)})
+    diagnosed: list[DiagnosedWell] = []
+    errors: list[dict[str, Any]] = []
+    for index, raw in enumerate(payload):
+        try:
+            model = WellCaseIn.model_validate(raw)
+            case = _to_well_case(model)
+            result = await _calculate(model, production_mode, False, 0, 100)
+            diagnosed.append(DiagnosedWell(case, result))
+        except ValidationError as exc:
+            errors.append({"index": index, "name": raw.get("name") if isinstance(raw, dict) else None,
+                           "type": "validation_error",
+                           "details": exc.errors(include_url=False, include_input=False)})
+        except DataQualityError as exc:
+            errors.append({"index": index, "name": raw.get("name") if isinstance(raw, dict) else None,
+                           "type": "data_quality_error", "message": str(exc),
+                           "reasons": exc.reasons})
+        except (ValueError, KeyError) as exc:
+            errors.append({"index": index, "name": raw.get("name") if isinstance(raw, dict) else None,
+                           "type": "calculation_error", "message": str(exc)})
+
+    policy = replace(DEFAULT_MASTER_PLAN_POLICY, low_risk_cutoff=min_risk)
+    plan = generate_master_plan(
+        diagnosed, generated_at=plan_date, include_low_risk=False, limit=limit, policy=policy,
+    )
+    tasks = [asdict(task) for task in plan.tasks]
+    loss_methodology = ({"method": tasks[0]["possible_oil_loss"]["method"],
+                         "limitations": tasks[0]["possible_oil_loss"]["limitations"]}
+                        if tasks else {
+                            "method": "Дебит нефти × сценарный диапазон или integrated risk score.",
+                            "limitations": "Screening-оценка для ранжирования, не прогноз потери.",
+                        })
+    return {
+        "policy": {"mode": "partial", "id": plan.policy_id, "version": plan.policy_version,
+                   "min_risk": min_risk},
+        "generated_at": plan.generated_at,
+        "plan_date": plan.plan_date,
+        "summary": asdict(plan.summary),
+        "tasks": tasks,
+        "errors": errors,
+        "loss_methodology": loss_methodology,
+        "advisory_notice": plan.advisory_notice,
+    }
 
 
 if __name__ == "__main__":

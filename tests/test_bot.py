@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import galit
+import pytest
 import telegram_bot as tb
 from galit import diagnose
 
@@ -197,6 +198,30 @@ def test_report_escapes_well_name():
     assert "&lt;script&gt;" in report
 
 
+def test_recent_store_is_bounded_per_chat_and_clear_isolated():
+    store = tb.RecentDiagnosisStore(per_chat_limit=2, chat_limit=2)
+    params, _ = tb.parse_args(POSITIONAL)
+    case = tb.build_case(params)
+    item = galit.DiagnosedWell(case, diagnose(case))
+    store.add(1, item)
+    store.add(1, item)
+    store.add(1, item)
+    store.add(2, item)
+    assert len(store.get(1)) == 2 and len(store.get(2)) == 1
+    assert store.clear(1) == 2 and store.get(1) == [] and len(store.get(2)) == 1
+
+
+def test_plan_format_is_safe_compact_and_documents_commands():
+    params, _ = tb.parse_args(POSITIONAL + ["скважина=<A>"])
+    case = tb.build_case(params)
+    chunks = tb.format_plan_messages([galit.DiagnosedWell(case, diagnose(case))])
+    assert all(len(chunk) <= tb.TELEGRAM_TEXT_LIMIT for chunk in chunks)
+    text = "".join(chunks)
+    assert "<A>" not in text and "&lt;A&gt;" in text
+    assert "БЛОК: верифицировать данные" in text
+    assert "/plan" in tb.START_TEXT and "/plan_clear" in tb.HELP_TEXT
+
+
 # ------------------------------------------------------- подбор обработки
 
 def _fake_result(onset_m: float, wax_severity: float) -> galit.DiagnosisResult:
@@ -220,3 +245,40 @@ def test_wax_treatment_depends_on_lift_type():
     assert "скребок" not in esp_plan          # 2000 м > 1500 м вылета скребка
     assert "растворитель" in esp_plan or "кабель" in esp_plan
     assert "2000 м" in sgn_plan               # ШГН: оборудование достаёт до забоя
+
+
+# ----------------------------------------------------------- forecast command
+
+def _diagnosed(name: str) -> galit.DiagnosedWell:
+    params, errors = tb.parse_args(POSITIONAL + [f"скважина={name}"])
+    assert errors == []
+    case = tb.build_case(params)
+    return galit.DiagnosedWell(case, diagnose(case))
+
+
+def test_forecast_select_empty_latest_and_normalized_name():
+    with pytest.raises(LookupError, match="Сначала рассчитайте скважину"):
+        tb.select_forecast_diagnosis([])
+    first = _diagnosed("Скважина Альфа")
+    latest = _diagnosed("Скважина Бета")
+    assert tb.select_forecast_diagnosis([first, latest]) is latest
+    assert tb.select_forecast_diagnosis([first, latest], "  СКВАЖИНА   альфа ") is first
+
+
+def test_forecast_select_unknown_and_ambiguous_names_are_clear():
+    items = [_diagnosed("Well A"), _diagnosed("WELL A")]
+    with pytest.raises(LookupError, match="не найдена"):
+        tb.select_forecast_diagnosis(items, "missing")
+    with pytest.raises(LookupError, match="неоднозначно"):
+        tb.select_forecast_diagnosis(items, "well a")
+
+
+def test_forecast_text_has_no_fake_date_or_probability_and_is_chunked():
+    chunks = tb.format_forecast_messages(_diagnosed("Честная дата"))
+    assert chunks and all(len(chunk) <= tb.TELEGRAM_TEXT_LIMIT for chunk in chunks)
+    text = "\n".join(chunks)
+    assert "дата недоступна" in text
+    assert "status:" in text and "Основание:" in text and "Нужно:" in text
+    assert "вероятность" not in text.lower()
+    assert "не заменяет промысловые исследования" in text
+    assert "/forecast" in tb.START_TEXT and "/forecast" in tb.HELP_TEXT

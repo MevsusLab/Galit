@@ -22,8 +22,10 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+from collections import OrderedDict, deque
 import os
 import sys
+import unicodedata
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -42,7 +44,14 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 import galit
-from galit import DataProvenance, WellCase, diagnose
+from galit import (
+    DataProvenance,
+    DiagnosedWell,
+    WellCase,
+    diagnose,
+    forecast_well,
+    generate_master_plan,
+)
 from galit.wax import recommend_wax_treatment
 from galit.wellbore import (
     FluidProperties,
@@ -118,6 +127,142 @@ TYPICAL_BRINE = {
 
 REQUIRED_KEYS = ["depth_m", "tubing_mm", "q_oil_m3d",
                  "q_water_m3d", "gor_m3m3", "wat_c"]
+
+
+class RecentDiagnosisStore:
+    """Bounded in-memory per-chat history; stores only domain objects for this process."""
+
+    def __init__(self, per_chat_limit: int = 20, chat_limit: int = 500):
+        self.per_chat_limit = per_chat_limit
+        self.chat_limit = chat_limit
+        self._chats: OrderedDict[int, deque[DiagnosedWell]] = OrderedDict()
+
+    def add(self, chat_id: int, item: DiagnosedWell) -> None:
+        history = self._chats.setdefault(chat_id, deque(maxlen=self.per_chat_limit))
+        history.append(item)
+        self._chats.move_to_end(chat_id)
+        while len(self._chats) > self.chat_limit:
+            self._chats.popitem(last=False)
+
+    def get(self, chat_id: int) -> list[DiagnosedWell]:
+        return list(self._chats.get(chat_id, ()))
+
+    def clear(self, chat_id: int) -> int:
+        history = self._chats.pop(chat_id, ())
+        return len(history)
+
+
+RECENT_DIAGNOSES = RecentDiagnosisStore()
+TELEGRAM_TEXT_LIMIT = 4096
+
+
+def _normalized_well_name(value: str) -> str:
+    """Unicode/case/whitespace-insensitive well name used only for lookup."""
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def select_forecast_diagnosis(items: list[DiagnosedWell], query: str = "") -> DiagnosedWell:
+    """Select latest diagnosis or a unique normalized exact well-name match."""
+    if not items:
+        raise LookupError("История пуста. Сначала рассчитайте скважину через /aspo или пошаговый ввод.")
+    normalized = _normalized_well_name(query)
+    if not normalized:
+        return items[-1]
+    matches = [item for item in items if _normalized_well_name(item.case.name) == normalized]
+    if not matches:
+        raise LookupError(f"Скважина «{query.strip()}» не найдена в истории этого чата.")
+    names = {item.case.name for item in matches}
+    if len(names) > 1:
+        raise LookupError("Имя скважины неоднозначно после нормализации: " + ", ".join(sorted(names)))
+    return matches[-1]
+
+
+def _forecast_chunks(blocks: list[str]) -> list[str]:
+    chunks: list[str] = []
+    current = ""
+    for block in blocks:
+        candidate = block if not current else current + "\n\n" + block
+        if len(candidate) > TELEGRAM_TEXT_LIMIT - 100 and current:
+            chunks.append(current)
+            current = block
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def format_forecast_messages(item: DiagnosedWell) -> list[str]:
+    """Compact honest forecast: no as_of/history means no invented calendar dates."""
+    forecast = forecast_well(item.diagnosis, item.case)
+    blocks = [
+        f"<b>Прогноз во времени · {html.escape(forecast.well)}</b>",
+        "Временная история не передана: дата появляется только при реальном расчётном окне.",
+    ]
+    for event in forecast.events:
+        if event.horizon_start_date is not None and event.horizon_end_date is not None:
+            if event.horizon_start_date == event.horizon_end_date:
+                date_text = event.horizon_start_date.isoformat()
+            else:
+                date_text = f"{event.horizon_start_date.isoformat()}–{event.horizon_end_date.isoformat()}"
+        elif event.horizon_start_days is not None and event.horizon_end_days is not None:
+            date_text = f"окно {event.horizon_start_days:.0f}–{event.horizon_end_days:.0f} сут.; календарная дата недоступна"
+        else:
+            date_text = "дата недоступна"
+        if event.probability is not None:
+            likelihood = f"вероятность {event.probability:.0%}"
+        elif event.risk_band is not None:
+            likelihood = f"likelihood {event.likelihood.value}; risk band {event.risk_band[0]:.2f}–{event.risk_band[1]:.2f}"
+        else:
+            likelihood = f"likelihood {event.likelihood.value}; risk band недоступен"
+        required = ", ".join(event.required_inputs) if event.required_inputs else "нет"
+        blocks.append(
+            f"<b>{html.escape(event.title)}</b>\n"
+            f"status: {event.status.value}\n"
+            f"{html.escape(date_text)}\n"
+            f"{html.escape(likelihood)}\n"
+            f"Основание: {html.escape(event.basis)}\n"
+            f"Нужно: {html.escape(required)}"
+        )
+    blocks.append("Оценка не заменяет промысловые исследования и инженерную проверку; screening-окна не являются гарантированными датами отказа.")
+    return _forecast_chunks(blocks)
+
+
+def format_plan_messages(items: list[DiagnosedWell], top: int = 10) -> list[str]:
+    """Build escaped compact HTML chunks within Telegram's message limit."""
+    if not items:
+        return ["История пуста. Сначала выполните /aspo или пошаговый расчёт."]
+    plan = generate_master_plan(items, limit=top)
+    loss = plan.summary.possible_oil_loss_central_m3d
+    lines = [
+        "<b>План мастера</b>",
+        f"Задач: {plan.summary.task_count} · заблокировано: {plan.summary.blocked_tasks} · "
+        f"потеря под риском: {'—' if loss is None else f'{loss:.1f} м³/сут'}",
+    ]
+    for index, task in enumerate(plan.tasks, 1):
+        action = task.recommended_action
+        if len(action) > 300:
+            action = action[:297] + "…"
+        status = "можно планировать" if task.safe_to_act else "БЛОК: верифицировать данные"
+        central = task.possible_oil_loss.central_m3d
+        lines.append(
+            f"\n<b>{index}. {html.escape(task.well)}</b> · {html.escape(task.response_deadline)}\n"
+            f"{html.escape(task.dominant_label)} · риск {task.risk:.2f} · "
+            f"потеря {'—' if central is None else f'{central:.1f} м³/сут'}\n"
+            f"{html.escape(status)}\n{html.escape(action)}"
+        )
+    chunks: list[str] = []
+    current = ""
+    for block in lines:
+        candidate = block if not current else current + "\n" + block
+        if len(candidate) > TELEGRAM_TEXT_LIMIT - 100 and current:
+            chunks.append(current)
+            current = block
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def _to_float(raw: str) -> float | None:
@@ -386,7 +531,8 @@ START_TEXT = (
     "1. Глубина, м\n2. Внутренний диаметр НКТ, мм\n"
     "3. Дебит нефти, м³/сут\n4. Дебит воды, м³/сут\n"
     "5. Газовый фактор, м³/м³\n6. WAT, °C\n\n"
-    "Чтобы начать, нажмите «🔎 Новый расчёт»."
+    "Чтобы начать, нажмите «🔎 Новый расчёт».\n"
+    "Последние расчёты: /plan; прогноз: /forecast [скважина]; очистка — /plan_clear."
 )
 HELP_TEXT = (
     "<b>Справка</b>\n\n"
@@ -401,7 +547,10 @@ HELP_TEXT = (
     "Дополнительно: <code>скважина=</code>, <code>способ=</code>, "
     "<code>парафин=</code>, <code>температура=</code>, "
     "<code>градиент=</code>, <code>co2=</code>, <code>буферное=</code>. "
-    "Десятичный разделитель — точка или запятая."
+    "Десятичный разделитель — точка или запятая.\n\n"
+    "<b>План:</b> <code>/plan</code> — последние успешные расчёты этого чата; "
+    "<code>/forecast [скважина]</code> — честный прогноз для последнего расчёта или указанного имени; "
+    "<code>/plan_clear</code> — очистить локальную историю. История ограничена и исчезает при перезапуске."
 )
 EXAMPLE_TEXT = (
     "<b>Пример исходных данных</b>\n\n"
@@ -444,6 +593,8 @@ async def send_calculation(message: Message, params: dict[str, float | str]) -> 
         await message.answer(f"Расчёт не выполнен: {html.escape(str(exc))}",
                              reply_markup=MAIN_MENU)
         return
+    if message.chat:
+        RECENT_DIAGNOSES.add(message.chat.id, DiagnosedWell(case, result))
     await message.answer(
         format_report(result, case, wax_treatment(result, case)),
         disable_web_page_preview=True, reply_markup=MAIN_MENU,
@@ -490,6 +641,33 @@ async def start_calculation(message: Message, state: FSMContext) -> None:
     await state.set_state(Calculation.collecting)
     await state.update_data(step=0, params={})
     await message.answer(FSM_FIELDS[0][1], reply_markup=CANCEL_MENU)
+
+
+@dp.message(Command("plan"))
+async def cmd_plan(message: Message) -> None:
+    chat_id = message.chat.id if message.chat else 0
+    for chunk in format_plan_messages(RECENT_DIAGNOSES.get(chat_id)):
+        await message.answer(chunk, disable_web_page_preview=True, reply_markup=MAIN_MENU)
+
+
+@dp.message(Command("forecast"))
+async def cmd_forecast(message: Message) -> None:
+    chat_id = message.chat.id if message.chat else 0
+    query = (message.text or "").partition(" ")[2].strip()
+    try:
+        item = select_forecast_diagnosis(RECENT_DIAGNOSES.get(chat_id), query)
+    except LookupError as exc:
+        await message.answer(html.escape(str(exc)), reply_markup=MAIN_MENU)
+        return
+    for chunk in format_forecast_messages(item):
+        await message.answer(chunk, disable_web_page_preview=True, reply_markup=MAIN_MENU)
+
+
+@dp.message(Command("plan_clear"))
+async def cmd_plan_clear(message: Message) -> None:
+    chat_id = message.chat.id if message.chat else 0
+    removed = RECENT_DIAGNOSES.clear(chat_id)
+    await message.answer(f"История плана очищена: {removed} расч.", reply_markup=MAIN_MENU)
 
 
 @dp.message(Command("aspo"))
@@ -542,7 +720,7 @@ async def collect_calculation_value(message: Message, state: FSMContext) -> None
 @dp.message()
 async def fallback(message: Message) -> None:
     await message.answer(
-        "Выберите действие в меню. Для быстрого расчёта доступна команда /aspo, "
+        "Выберите действие в меню. Доступны /aspo, /forecast, /plan, /plan_clear; "
         "описание — /help.", reply_markup=MAIN_MENU,
     )
 

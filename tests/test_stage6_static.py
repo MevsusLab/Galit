@@ -21,12 +21,12 @@ def test_sample_payload_is_json_and_has_no_secrets():
     assert not ({"token", "password", "secret"} & set(payload))
 
 
-def test_local_postman_collection_has_four_safe_requests():
+def test_local_postman_collection_has_six_safe_requests():
     collection = ROOT / "postman" / "collections" / "GALIT API"
     requests = sorted(collection.glob("*.request.yaml"))
-    assert len(requests) == 4
+    assert len(requests) == 6
     combined = "\n".join(path.read_text(encoding="utf-8") for path in requests)
-    for endpoint in ("/health", "/readiness", "/diagnose", "/diagnose/bulk"):
+    for endpoint in ("/health", "/readiness", "/diagnose", "/diagnose/bulk", "/master-plan", "/forecast"):
         assert endpoint in combined
     assert "{{base_url}}" in combined
     assert "token" not in combined.lower()
