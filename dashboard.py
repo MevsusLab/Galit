@@ -277,28 +277,8 @@ def inject_css() -> None:
         .app-subtitle {{
             font-size: 14px; color: {INK_MUTED}; margin-top: 2px;
         }}
-        .app-header-logo {{
-            position: fixed;
-            top: 12px;
-            right: 40px;
-            z-index: 1001;
-            display: block;
-            width: 220px;
-            height: 64px;
-            max-width: 220px;
-            max-height: 64px;
-            object-fit: contain;
-        }}
         @media (max-width: 900px) {{
             .app-header {{ min-height: 0; }}
-            .app-header-logo {{
-                top: 16px;
-                right: 20px;
-                width: 132px;
-                height: 44px;
-                max-width: 132px;
-                max-height: 44px;
-            }}
         }}
         .app-rule {{
             border: none; border-top: 1px solid {BORDER}; margin: 14px 0 20px 0;
@@ -319,19 +299,17 @@ def inject_css() -> None:
         section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{
             transform: translateY(-42px);
         }}
-        .sidebar-brand {{
-            font-size: 15px; font-weight: 700; color: {GREEN_900};
-            padding: 0 0 2px 0; margin-top: 0; letter-spacing: 0.4px;
+        .sidebar-logo {{
+            display: block;
+            width: min(100%, 220px);
+            height: auto;
+            margin: 0 auto 12px 0;
+            object-fit: contain;
         }}
-        .sidebar-hint + div[data-testid="stDivider"] {{
+        .sidebar-logo + div[data-testid="stDivider"] {{
             margin-top: 10px;
             margin-bottom: 12px;
         }}
-        .sidebar-brand::before {{
-            content: ""; display: inline-block; width: 10px; height: 10px;
-            background: {GREEN_700}; margin-right: 9px;
-        }}
-        .sidebar-hint {{ font-size: 12px; color: {INK_MUTED}; line-height: 1.45; }}
 
         /* Streamlit/BaseWeb controls: explicit light surfaces survive host dark mode. */
         section[data-testid="stSidebar"] p,
@@ -1272,13 +1250,8 @@ def fig_severity(detail: DiagnosisResult) -> go.Figure:
 
 
 def render_header() -> None:
-    logo_uri = local_image_data_uri(HEADER_LOGO_ASSET)
-    logo_html = (
-        f'<img class="app-header-logo" src="{logo_uri}" alt="Логотип ГАЛИТ">'
-        if logo_uri else ""
-    )
     st.markdown(
-        f"""
+        """
         <div class="app-header">
             <div class="app-header-text">
                 <div class="app-title">ГАЛИТ</div>
@@ -1287,7 +1260,6 @@ def render_header() -> None:
                     коррозия. Ранжирование фонда и профили T(z), P(z).
                 </div>
             </div>
-            {logo_html}
         </div>
         <hr class="app-rule">
         """,
@@ -1336,11 +1308,12 @@ def render_sidebar():
     upload = None
     production_mode = False
     with st.sidebar:
-        st.markdown(
-            '<div class="sidebar-brand">ПО «ГАЛИТ»</div>'
-            '<div class="sidebar-hint">Диагностика осложнений добычи</div>',
-            unsafe_allow_html=True,
-        )
+        logo_uri = local_image_data_uri(HEADER_LOGO_ASSET)
+        if logo_uri:
+            st.markdown(
+                f'<img class="sidebar-logo" src="{logo_uri}" alt="Логотип ГАЛИТ">',
+                unsafe_allow_html=True,
+            )
         st.divider()
 
         upload = st.file_uploader(
