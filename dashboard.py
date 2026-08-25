@@ -67,16 +67,29 @@ INK_MUTED = "#5A6560"   # вторичный текст
 BORDER = "#D6DED9"      # границы панелей
 SURFACE = "#F6F8F7"     # фон панелей
 
-# Индикация статуса: норма / повышенный / критический
-STATUS_OK_BG = "#E8F3EC"
+# Индикация статуса: норма / повышенный / критический.
+# Тёплая шкала (янтарь -> красный) взята с референсного макета; каждая пара
+# «подложка + акцент» проверена на WCAG в tests/test_dashboard.py.
+STATUS_OK_BG = "#E9F4EC"
 STATUS_OK = "#246B2A"
-STATUS_WARN_BG = "#FBF3E4"
-STATUS_WARN = "#854D00"
-STATUS_CRIT_BG = "#FBE9E7"
-STATUS_CRIT = "#B71C1C"
+STATUS_WARN_BG = "#FDF3E0"
+STATUS_WARN = "#9A4A00"
+STATUS_CRIT_BG = "#FCE9E6"
+STATUS_CRIT = "#B02020"
+
+# Промежуточный «высокий» тон шкалы: чипы и левые акценты карточек.
+STATUS_HIGH_BG = "#FDEEE6"
+STATUS_HIGH = "#C2410C"
 
 RISK_WARN = 0.35   # ниже -- норма
 RISK_CRIT = 0.60   # выше -- критический
+
+# Нейтральная основа поверхностей: почти белый лист, как на референсе.
+CANVAS = "#FFFFFF"          # плоскость карточек
+HAIRLINE = "#E7EBE8"        # тонкая линия вместо рамок и сеток
+SHADOW_SOFT = "0 1px 2px rgba(16, 40, 30, 0.04), 0 8px 24px rgba(16, 40, 30, 0.07)"
+SHADOW_RAISED = "0 2px 4px rgba(16, 40, 30, 0.05), 0 14px 34px rgba(16, 40, 30, 0.10)"
+RADIUS = "14px"             # крупный радиус скругления с макета
 
 # Последовательность цветов линий профилей (зелёная гамма + графитовый)
 LINE_COLORS = ["#0F6B43", "#0B4A2F", "#3D8B66", "#6FA98C", "#275D57", "#5A6560"]
@@ -212,9 +225,10 @@ def inject_css() -> None:
         .stApp {{
             font-family: {FONT_FAMILY};
             color: {INK};
+            /* Референс — почти белый лист: фото остаётся текстурой подложки,
+               поверх него плотная белая вуаль, чтобы карточки читались. */
             background:
-                linear-gradient(115deg, rgba(244, 248, 246, 0.64) 0%, rgba(244, 248, 246, 0.36) 48%, rgba(11, 74, 47, 0.25) 100%),
-                linear-gradient(rgba(8, 35, 25, 0.09), rgba(8, 35, 25, 0.09)),
+                linear-gradient(180deg, rgba(255, 255, 255, 0.90) 0%, rgba(252, 253, 252, 0.94) 100%),
                 {background_layer};
             background-attachment: fixed;
             background-position: center;
@@ -236,16 +250,17 @@ def inject_css() -> None:
         p, li, span, label {{ color: {INK}; }}
         h1, h2, h3 {{
             color: {INK};
-            text-shadow: 0 1px 2px rgba(255, 255, 255, 0.70);
+            letter-spacing: -0.2px;
         }}
 
         /* строгий режим: без фирменной радужной полосы и колонтитула */
         div[data-testid="stDecoration"] {{ display: none; }}
         #MainMenu, footer {{ visibility: hidden; }}
         header[data-testid="stHeader"] {{
-            background: rgba(255, 255, 255, 0.42);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.92);
+            border-bottom: 1px solid {HAIRLINE};
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
         }}
 
         /* ---------- шапка приложения ---------- */
@@ -253,16 +268,13 @@ def inject_css() -> None:
             position: relative;
             display: flex;
             align-items: center;
-            min-height: 82px;
-            background: rgba(255, 255, 255, 0.76);
-            border: 1px solid rgba(214, 222, 217, 0.74);
-            border-left: 5px solid {GREEN_700};
-            border-radius: 10px;
-            box-shadow: 0 8px 24px rgba(9, 47, 32, 0.10);
-            backdrop-filter: blur(8px) saturate(112%);
-            -webkit-backdrop-filter: blur(8px) saturate(112%);
-            padding: 12px 18px;
-            margin-bottom: 12px;
+            min-height: 88px;
+            background: {CANVAS};
+            border: 1px solid {HAIRLINE};
+            border-radius: {RADIUS};
+            box-shadow: {SHADOW_SOFT};
+            padding: 18px 24px;
+            margin-bottom: 18px;
         }}
         .app-header-text {{
             position: relative;
@@ -271,11 +283,11 @@ def inject_css() -> None:
             min-width: 0;
         }}
         .app-title {{
-            font-size: 26px; font-weight: 700; color: {GREEN_900};
-            letter-spacing: 0.5px; line-height: 1.2;
+            font-size: 30px; font-weight: 750; color: {GREEN_900};
+            letter-spacing: -0.4px; line-height: 1.15;
         }}
         .app-subtitle {{
-            font-size: 14px; color: {INK_MUTED}; margin-top: 2px;
+            font-size: 14px; color: {INK_MUTED}; margin-top: 4px;
         }}
         @media (max-width: 900px) {{
             .app-header {{ min-height: 0; }}
@@ -286,11 +298,11 @@ def inject_css() -> None:
 
         /* ---------- боковая панель ---------- */
         section[data-testid="stSidebar"] {{
-            background: rgba(255, 255, 255, 0.68);
-            border-right: 1px solid rgba(214, 222, 217, 0.70);
-            box-shadow: 8px 0 28px rgba(9, 47, 32, 0.10);
-            backdrop-filter: blur(12px) saturate(118%);
-            -webkit-backdrop-filter: blur(12px) saturate(118%);
+            background: rgba(255, 255, 255, 0.94);
+            border-right: 1px solid {HAIRLINE};
+            box-shadow: none;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
         }}
         section[data-testid="stSidebar"] > div {{ background: transparent; }}
         section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {{
@@ -362,18 +374,21 @@ def inject_css() -> None:
         /* ---------- кнопки ---------- */
         .stButton > button {{
             background: {GREEN_700}; color: #FFFFFF; border: none;
-            border-radius: 4px; font-weight: 600; font-size: 14px;
-            padding: 6px 16px; width: 100%;
-            transition: background 0.15s ease;
+            border-radius: 10px; font-weight: 650; font-size: 14px;
+            padding: 9px 18px; width: 100%;
+            box-shadow: 0 1px 2px rgba(16, 40, 30, 0.10);
+            transition: background 0.15s ease, transform 0.15s ease;
         }}
-        .stButton > button:hover {{ background: {GREEN_900}; color: #FFFFFF; }}
+        .stButton > button:hover {{
+            background: {GREEN_900}; color: #FFFFFF; transform: translateY(-1px);
+        }}
         .stButton > button:focus {{
-            box-shadow: 0 0 0 2px {GREEN_100}; color: #FFFFFF;
+            box-shadow: 0 0 0 3px {GREEN_100}; color: #FFFFFF;
         }}
         .stDownloadButton > button {{
             background: #FFFFFF; color: {GREEN_700};
-            border: 1px solid {GREEN_700}; border-radius: 4px;
-            font-weight: 600; font-size: 14px; padding: 4px 16px; width: 100%;
+            border: 1px solid {GREEN_700}; border-radius: 10px;
+            font-weight: 650; font-size: 14px; padding: 8px 18px; width: 100%;
         }}
         .stDownloadButton > button:hover {{
             background: {GREEN_100}; color: {GREEN_900};
@@ -381,39 +396,53 @@ def inject_css() -> None:
         }}
 
         /* ---------- вкладки ---------- */
+        div[data-testid="stTabs"] [data-baseweb="tab-list"] {{
+            gap: 6px;
+            background: {SURFACE};
+            border: 1px solid {HAIRLINE};
+            border-radius: 12px;
+            padding: 6px;
+        }}
         div[data-testid="stTabs"] button[data-baseweb="tab"] {{
-            background: #FFFFFF; color: {INK_MUTED};
-            font-weight: 600; font-size: 14px;
-            border-radius: 0; padding: 8px 18px;
+            background: transparent; color: {INK_MUTED};
+            font-weight: 650; font-size: 14px;
+            border-radius: 9px; padding: 8px 18px; border-bottom: none;
         }}
         div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {{
-            color: {GREEN_900};
-            border-bottom: 3px solid {GREEN_700};
+            background: {CANVAS}; color: {GREEN_900};
+            border-bottom: none;
+            box-shadow: 0 1px 2px rgba(16, 40, 30, 0.10);
         }}
+        div[data-testid="stTabs"] [data-baseweb="tab-highlight"],
+        div[data-testid="stTabs"] [data-baseweb="tab-border"] {{ display: none; }}
 
         /* ---------- карточки-метрики ---------- */
         div[data-testid="stMetric"] {{
-            background: rgba(255, 255, 255, 0.78);
-            border: 1px solid rgba(214, 222, 217, 0.82);
-            border-radius: 8px; padding: 14px 16px 10px 16px;
-            box-shadow: 0 6px 18px rgba(9, 47, 32, 0.08);
-            backdrop-filter: blur(8px);
-            -webkit-backdrop-filter: blur(8px);
+            background: {CANVAS};
+            border: 1px solid {HAIRLINE};
+            border-radius: {RADIUS}; padding: 18px 20px 14px 20px;
+            box-shadow: {SHADOW_SOFT};
+            transition: box-shadow 0.18s ease, transform 0.18s ease;
+        }}
+        div[data-testid="stMetric"]:hover {{
+            box-shadow: {SHADOW_RAISED};
+            transform: translateY(-1px);
         }}
         div[data-testid="stMetricLabel"] p {{
-            color: {INK_MUTED}; font-size: 12px; font-weight: 600;
-            text-transform: uppercase; letter-spacing: 0.6px;
-            margin-bottom: 4px;
+            color: {INK_MUTED}; font-size: 11px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.8px;
+            margin-bottom: 6px;
         }}
         div[data-testid="stMetricValue"] {{
-            color: {INK}; font-weight: 700;
+            color: {INK}; font-weight: 750; letter-spacing: -0.6px;
         }}
 
         /* ---------- таблицы, canvas-grid и графики ---------- */
         div[data-testid="stDataFrame"] {{
-            background: rgba(255, 255, 255, 0.88); color: {INK};
-            border: 1px solid {BORDER}; border-radius: 8px;
-            box-shadow: 0 6px 18px rgba(9, 47, 32, 0.08);
+            background: {CANVAS}; color: {INK};
+            border: 1px solid {HAIRLINE}; border-radius: {RADIUS};
+            box-shadow: {SHADOW_SOFT};
+            overflow: hidden;
         }}
         div[data-testid="stDataFrame"] *,
         div[data-testid="stDataFrame"] [role="columnheader"],
@@ -425,8 +454,16 @@ def inject_css() -> None:
             background: #FFFFFF; color: {INK} !important;
         }}
         div[data-testid="stDataFrame"] canvas {{ background: #FFFFFF; }}
-        table, th, td {{ color: {INK}; border-color: {BORDER}; }}
-        th {{ background: {SURFACE}; font-weight: 700; }}
+        /* Референс без внутренней сетки: только горизонтальные волосяные линии. */
+        table {{ border-collapse: collapse; }}
+        table, th, td {{ color: {INK}; border-color: {HAIRLINE}; }}
+        td {{ border-left: none; border-right: none; }}
+        th {{
+            background: {SURFACE}; font-weight: 700;
+            border-left: none; border-right: none;
+            font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px;
+            color: {INK_MUTED};
+        }}
         .js-plotly-plot .plotly .modebar {{ background: transparent; }}
 
         /* Alerts own their pale surfaces; force readable foreground in every variant. */
@@ -437,13 +474,11 @@ def inject_css() -> None:
 
         /* ---------- информационные блоки ---------- */
         .note-box {{
-            background: rgba(255, 255, 255, 0.78);
-            border: 1px solid rgba(214, 222, 217, 0.82);
+            background: {CANVAS};
+            border: 1px solid {HAIRLINE};
             border-left: 4px solid {GREEN_700};
-            border-radius: 8px; padding: 12px 16px; font-size: 14px;
-            box-shadow: 0 6px 18px rgba(9, 47, 32, 0.08);
-            backdrop-filter: blur(8px);
-            -webkit-backdrop-filter: blur(8px);
+            border-radius: {RADIUS}; padding: 16px 20px; font-size: 14px;
+            box-shadow: {SHADOW_SOFT};
         }}
         .legend-chip {{
             display: inline-block; margin-right: 22px;
@@ -451,12 +486,102 @@ def inject_css() -> None:
         }}
         .legend-dot {{
             display: inline-block; width: 10px; height: 10px;
-            border-radius: 2px; margin-right: 7px; vertical-align: -1px;
+            border-radius: 3px; margin-right: 7px; vertical-align: -1px;
         }}
         .section-title {{
-            font-size: 16px; font-weight: 700; color: {INK};
-            margin: 6px 0 10px 0;
+            font-size: 17px; font-weight: 750; color: {INK};
+            letter-spacing: -0.2px; margin: 6px 0 12px 0;
         }}
+
+        /* ---------- статус-чипы тёплой шкалы (как на референсе) ---------- */
+        .status-chip {{
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 4px 12px; border-radius: 999px;
+            font-size: 12px; font-weight: 700; letter-spacing: 0.2px;
+            border: 1px solid transparent;
+        }}
+        .status-chip.is-ok {{ background: {STATUS_OK_BG}; color: {STATUS_OK}; }}
+        .status-chip.is-warn {{ background: {STATUS_WARN_BG}; color: {STATUS_WARN}; }}
+        .status-chip.is-high {{ background: {STATUS_HIGH_BG}; color: {STATUS_HIGH}; }}
+        .status-chip.is-crit {{ background: {STATUS_CRIT_BG}; color: {STATUS_CRIT}; }}
+
+        /* Мягкая карточка-контейнер для блоков плана и прогноза. */
+        .surface-card {{
+            background: {CANVAS};
+            border: 1px solid {HAIRLINE};
+            border-radius: {RADIUS};
+            box-shadow: {SHADOW_SOFT};
+            padding: 18px 20px;
+        }}
+
+        /* ---------- shell: navigation / overview / alerts ---------- */
+        .shell-eyebrow {{
+            color: {GREEN_700}; font-size: 11px; font-weight: 800;
+            letter-spacing: 1.2px; text-transform: uppercase;
+            margin: 0 0 5px 0;
+        }}
+        .shell-heading {{
+            color: {INK}; font-size: 22px; font-weight: 760;
+            letter-spacing: -0.35px; margin: 0 0 4px 0;
+        }}
+        .shell-copy {{ color: {INK_MUTED}; font-size: 13px; margin-bottom: 14px; }}
+        .sidebar-nav-title {{
+            color: {INK_MUTED}; font-size: 10px; font-weight: 800;
+            letter-spacing: 1.1px; text-transform: uppercase; margin: 4px 0 8px;
+        }}
+        .sidebar-nav {{ display: grid; gap: 3px; margin: 0 0 14px; }}
+        .sidebar-nav-item {{
+            display: flex; align-items: center; gap: 9px;
+            min-height: 34px; padding: 7px 9px; border-radius: 9px;
+            color: {INK_MUTED}; font-size: 12px; font-weight: 650;
+        }}
+        .sidebar-nav-item:first-child {{ background: {GREEN_100}; color: {GREEN_900}; }}
+        .sidebar-nav-index {{
+            display: inline-grid; place-items: center; width: 20px; height: 20px;
+            border-radius: 6px; background: #FFFFFF; color: {GREEN_700};
+            font-size: 10px; font-weight: 800;
+        }}
+        .alerts-rail {{
+            border-left: 1px solid {HAIRLINE}; padding-left: 14px;
+            min-height: 100%;
+        }}
+        .alert-card {{
+            background: {CANVAS}; border: 1px solid {HAIRLINE};
+            border-left: 3px solid var(--alert-accent, {STATUS_WARN});
+            border-radius: 11px; padding: 11px 12px; margin-bottom: 9px;
+            box-shadow: {SHADOW_SOFT}; overflow-wrap: anywhere;
+        }}
+        .alert-card.is-critical {{ --alert-accent: {STATUS_CRIT}; }}
+        .alert-card.is-warning {{ --alert-accent: {STATUS_WARN}; }}
+        .alert-card.is-ok {{ --alert-accent: {STATUS_OK}; }}
+        .alert-card-title {{ color: {INK}; font-size: 13px; font-weight: 750; }}
+        .alert-card-meta {{ color: {INK_MUTED}; font-size: 11px; margin-top: 3px; }}
+        .overview-table {{ width: 100%; font-size: 12px; }}
+        .overview-table td {{ padding: 8px 6px; border-bottom: 1px solid {HAIRLINE}; }}
+        .overview-table td:last-child {{ text-align: right; font-weight: 750; }}
+
+        @media (max-width: 1100px) {{
+            .alerts-rail {{ border-left: 0; border-top: 1px solid {HAIRLINE};
+                            padding: 14px 0 0; margin-top: 8px; }}
+            .app-title {{ font-size: 26px; }}
+        }}
+        @media (max-width: 720px) {{
+            .stApp [data-testid="stMainBlockContainer"] {{ padding-left: 12px; padding-right: 12px; }}
+            .app-header {{ padding: 14px 16px; border-radius: 12px; }}
+            div[data-testid="stTabs"] [data-baseweb="tab-list"] {{
+                overflow-x: auto; flex-wrap: nowrap; justify-content: flex-start;
+                scrollbar-width: thin;
+            }}
+            div[data-testid="stTabs"] button[data-baseweb="tab"] {{
+                flex: 0 0 auto; padding: 7px 12px; font-size: 12px;
+            }}
+        }}
+        @media (prefers-reduced-motion: reduce) {{
+            *, *::before, *::after {{ scroll-behavior: auto !important;
+                transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }}
+        }}
+        div[data-testid="stExpander"] {{ border-radius: {RADIUS}; }}
+        div[data-testid="stAlert"] {{ border-radius: 12px; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -1090,9 +1215,9 @@ def _style_axes(fig: go.Figure) -> None:
         margin=dict(l=10, r=10, t=30, b=10),
         hoverlabel=dict(font=dict(family=FONT_FAMILY)),
     )
-    fig.update_xaxes(gridcolor=BORDER, zeroline=False, linecolor=BORDER)
+    fig.update_xaxes(gridcolor=HAIRLINE, zeroline=False, linecolor=HAIRLINE)
     fig.update_yaxes(
-        gridcolor=BORDER, zeroline=False, linecolor=BORDER,
+        gridcolor=HAIRLINE, zeroline=False, linecolor=HAIRLINE,
         autorange="reversed", title="Глубина, м",
     )
 
@@ -1216,6 +1341,72 @@ def forecast_event_frame(events: list[galit.ForecastEvent] | tuple[galit.Forecas
     return pd.DataFrame(rows)
 
 
+def fig_fund_risk(results: list[DiagnosisResult]) -> go.Figure:
+    """Compact overview chart built only from the current diagnosis results."""
+    ordered = sorted(results, key=lambda item: item.integrated_risk, reverse=True)[:12]
+    colors = [risk_status(item.integrated_risk)[1] for item in ordered]
+    fig = go.Figure(go.Bar(
+        x=[item.well for item in ordered],
+        y=[item.integrated_risk for item in ordered],
+        marker_color=colors,
+        text=[f"{item.integrated_risk:.2f}" for item in ordered],
+        textposition="outside",
+        hovertemplate="%{x}<br>Интегральный риск: %{y:.2f}<extra></extra>",
+    ))
+    fig.add_hline(y=RISK_WARN, line_color=STATUS_WARN, line_dash="dot", line_width=1)
+    fig.add_hline(y=RISK_CRIT, line_color=STATUS_CRIT, line_dash="dot", line_width=1)
+    fig.update_layout(
+        height=290, showlegend=False, paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+        font=dict(family=FONT_FAMILY, color=INK), margin=dict(l=8, r=8, t=20, b=8),
+        xaxis=dict(title="", tickangle=-28, gridcolor=HAIRLINE),
+        yaxis=dict(title="Риск, 0–1", range=[0, 1.08], gridcolor=HAIRLINE, zeroline=False),
+    )
+    return fig
+
+
+def fig_mechanism_mix(results: list[DiagnosisResult]) -> go.Figure:
+    """Dominant-mechanism structure for the current fund, without inferred history."""
+    counts = {mechanism: 0 for mechanism in MECH_RU}
+    for result in results:
+        counts[result.dominant] = counts.get(result.dominant, 0) + 1
+    nonzero = [(mechanism, count) for mechanism, count in counts.items() if count]
+    fig = go.Figure(go.Pie(
+        labels=[MECH_RU.get(mechanism, mechanism) for mechanism, _ in nonzero],
+        values=[count for _, count in nonzero], hole=0.68,
+        marker_colors=[GREEN_700, STATUS_WARN, STATUS_HIGH, STATUS_CRIT][:len(nonzero)],
+        textinfo="percent", hovertemplate="%{label}: %{value}<extra></extra>",
+    ))
+    fig.update_layout(
+        height=290, showlegend=True,
+        legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center"),
+        annotations=[dict(text=str(len(results)), x=0.5, y=0.5, showarrow=False,
+                          font=dict(size=22, color=INK, family=FONT_FAMILY))],
+        paper_bgcolor="#FFFFFF", font=dict(family=FONT_FAMILY, color=INK),
+        margin=dict(l=8, r=8, t=20, b=35),
+    )
+    return fig
+
+
+def overview_alerts(results: list[DiagnosisResult]) -> list[dict[str, str]]:
+    """Return current-state alerts; deliberately contains no invented timestamps."""
+    alerts: list[dict[str, str]] = []
+    for result in sorted(results, key=lambda item: item.integrated_risk, reverse=True):
+        if result.integrated_risk >= RISK_CRIT:
+            level = "critical"
+        elif result.integrated_risk >= RISK_WARN:
+            level = "warning"
+        else:
+            continue
+        alerts.append({
+            "level": level,
+            "well": result.well,
+            "title": f"{MECH_RU.get(result.dominant, result.dominant)} · риск {result.integrated_risk:.2f}",
+            "quality": f"Качество {result.quality.grade} · "
+                       f"{'действие разрешено' if action_is_safe(result)[0] else 'trust-gate блокирует действие'}",
+        })
+    return alerts
+
+
 def fig_severity(detail: DiagnosisResult) -> go.Figure:
     """Вклад механизмов в риск по одной скважине."""
     mechanisms = ["halite", "calcite", "wax", "corrosion"]
@@ -1314,6 +1505,21 @@ def render_sidebar():
                 f'<img class="sidebar-logo" src="{logo_uri}" alt="Логотип ГАЛИТ">',
                 unsafe_allow_html=True,
             )
+        st.divider()
+        st.markdown(
+            """
+            <div class="sidebar-nav-title">Рабочие разделы</div>
+            <nav class="sidebar-nav" aria-label="Навигация по разделам">
+                <div class="sidebar-nav-item"><span class="sidebar-nav-index">01</span>Обзор фонда</div>
+                <div class="sidebar-nav-item"><span class="sidebar-nav-index">02</span>План мастера</div>
+                <div class="sidebar-nav-item"><span class="sidebar-nav-index">03</span>Ранжирование фонда</div>
+                <div class="sidebar-nav-item"><span class="sidebar-nav-index">04</span>Профили T(z) · P(z)</div>
+                <div class="sidebar-nav-item"><span class="sidebar-nav-index">05</span>Детально по скважине</div>
+                <div class="sidebar-nav-item"><span class="sidebar-nav-index">06</span>Прогноз и пилот</div>
+            </nav>
+            """,
+            unsafe_allow_html=True,
+        )
         st.divider()
 
         upload = st.file_uploader(
@@ -1509,6 +1715,61 @@ def main() -> None:
                 help=f"Риск от {RISK_WARN:.2f} до {RISK_CRIT:.2f}")
     kpi4.metric("Средний риск фонда", f"{sum(risks) / len(risks):.2f}",
                 help=f"Чаще всего лидирует: {dominant_counts.index[0]}")
+
+    # --- overview shell: current snapshot only, no invented history/timestamps ---
+    st.markdown(
+        '<div class="shell-eyebrow">Оперативная картина</div>'
+        '<div class="shell-heading">Обзор фонда</div>'
+        '<div class="shell-copy">Риски, структура осложнений и текущие сигналы '
+        'по загруженному расчёту.</div>',
+        unsafe_allow_html=True,
+    )
+    overview_main, overview_alerts_col = st.columns([3, 1], gap="large")
+    with overview_main:
+        risk_col, mix_col = st.columns([3, 2])
+        with risk_col:
+            st.markdown('<span class="section-title">Риск по скважинам</span>',
+                        unsafe_allow_html=True)
+            st.plotly_chart(fig_fund_risk(results), width="stretch",
+                            config={"displaylogo": False, "displayModeBar": False})
+        with mix_col:
+            st.markdown('<span class="section-title">Структура осложнений</span>',
+                        unsafe_allow_html=True)
+            st.plotly_chart(fig_mechanism_mix(results), width="stretch",
+                            config={"displaylogo": False, "displayModeBar": False})
+        st.markdown('<span class="section-title">Скважины с наибольшим риском</span>',
+                    unsafe_allow_html=True)
+        top_rows = "".join(
+            f'<tr><td>{item.well}</td><td>{MECH_RU.get(item.dominant, item.dominant)}</td>'
+            f'<td>{item.integrated_risk:.2f}</td></tr>'
+            for item in sorted(results, key=lambda row: row.integrated_risk, reverse=True)[:5]
+        )
+        st.markdown(
+            '<table class="overview-table"><thead><tr><th>Скважина</th>'
+            '<th>Лидер</th><th>Риск</th></tr></thead><tbody>' + top_rows + '</tbody></table>',
+            unsafe_allow_html=True,
+        )
+    with overview_alerts_col:
+        st.markdown('<div class="alerts-rail"><div class="shell-eyebrow">Сигналы</div>'
+                    '<div class="shell-heading">Alerts</div></div>', unsafe_allow_html=True)
+        alerts = overview_alerts(results)
+        if not alerts:
+            st.markdown(
+                '<div class="alert-card is-ok"><div class="alert-card-title">'
+                'Активных сигналов нет</div><div class="alert-card-meta">'
+                'В текущем расчёте нет скважин выше порога повышенного риска.</div></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            for alert in alerts[:6]:
+                st.markdown(
+                    f'<div class="alert-card is-{alert["level"]}">'
+                    f'<div class="alert-card-title">{alert["well"]}</div>'
+                    f'<div class="alert-card-meta">{alert["title"]}<br>{alert["quality"]}</div>'
+                    '</div>', unsafe_allow_html=True,
+                )
+        if len(alerts) > 6:
+            st.caption(f"Ещё сигналов: {len(alerts) - 6}. Полный список — в ранжировании.")
 
     st.divider()
     tab_plan, tab_rank, tab_profiles, tab_well, tab_forecast, tab_pilot = st.tabs(

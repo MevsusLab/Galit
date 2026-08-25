@@ -146,6 +146,22 @@ def test_fig_profiles_traces_and_duplicate_labels():
     assert len(fig.data) == 5
 
 
+def test_overview_figures_and_alerts_use_current_results_only():
+    results = [diagnose(case) for case in dashboard.galit.synthetic.make_fund(8, seed=17)]
+    risk_fig = dashboard.fig_fund_risk(results)
+    mix_fig = dashboard.fig_mechanism_mix(results)
+    alerts = dashboard.overview_alerts(results)
+
+    assert len(risk_fig.data) == 1
+    assert list(risk_fig.data[0].x) == [
+        item.well for item in sorted(results, key=lambda row: row.integrated_risk, reverse=True)
+    ]
+    assert len(mix_fig.data) == 1
+    assert sum(mix_fig.data[0].values) == len(results)
+    assert all("timestamp" not in alert and "time" not in alert for alert in alerts)
+    assert all(alert["well"] in {item.well for item in results} for alert in alerts)
+
+
 # -------------------------------------------------------------- шаблон XLSX
 
 def test_template_bytes_roundtrip():

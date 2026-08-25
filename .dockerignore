@@ -1,0 +1,43 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.streamlit
+
+# Секреты и локальные настройки не попадают в образ.
+.env
+.env.*
+*.pem
+*.key
+
+# Промысловые данные и отчёты остаются вне контейнера.
+data
+reports
+calibration
+*.xlsx
+*.xls
+*.csv
+
+# Интерфейсы и материалы, не нужные API-образу.
+dashboard.py
+telegram_bot.py
+calibration_cli.py
+demo.py
+example_one_well.py
+tests
+tools
+assets
+docs
+postman
+examples
+README.md
+requirements-dev.txt
+Dockerfile
+.dockerignore
+*.md
+*.png
+*.jpg
+*.jpeg
