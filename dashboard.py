@@ -297,13 +297,13 @@ def inject_css() -> None:
             padding-top: 0;
         }}
         section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{
-            transform: translateY(-42px);
+            transform: translateY(-68px);
         }}
         .sidebar-logo {{
             display: block;
             width: min(100%, 220px);
             height: auto;
-            margin: 0 auto 12px 0;
+            margin: 0 auto 0 0;
             object-fit: contain;
         }}
         .sidebar-logo + div[data-testid="stDivider"] {{
