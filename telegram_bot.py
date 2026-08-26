@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import math
 from collections import OrderedDict, deque
 import os
 import sys
@@ -314,6 +315,102 @@ def format_economics_messages(item: DiagnosedWell,
         f"payback ratio: {'недоступно' if b.payback_ratio is None else f'{b.payback_ratio:.2f}'}",
         "Допущения: постоянные дебит/цена на горизонте; эффективность — доля предотвращаемого ущерба; конвертация валют не выполняется.",
     ]
+    return _forecast_chunks(blocks)
+
+
+def parse_scenario_args(args: list[str]) -> tuple[dict[str, float | str | bool], list[str]]:
+    """Parse /scenario key=value changes; economic values remain optional."""
+    aliases = {
+        "нефть_%": "oil_rate_relative_change", "oil_pct": "oil_rate_relative_change",
+        "нефть": "oil_rate_delta_m3_day", "oil_delta": "oil_rate_delta_m3_day",
+        "вода_%": "water_rate_relative_change", "water_pct": "water_rate_relative_change",
+        "вода": "water_rate_delta_m3_day", "water_delta": "water_rate_delta_m3_day",
+        "давление": "wellhead_pressure_delta_pa", "pressure_pa": "wellhead_pressure_delta_pa",
+        "температура": "surface_temperature_delta_c", "temperature": "surface_temperature_delta_c",
+        "ингибитор": "inhibitor_dosage_delta_mg_l", "inhibitor": "inhibitor_dosage_delta_mg_l",
+        "промывка": "wash_treatment", "wash": "wash_treatment",
+        "режим": "operating_mode", "mode": "operating_mode",
+        "эффект_ингибитора": "inhibitor_efficiency", "inhibitor_effect": "inhibitor_efficiency",
+        "источник": "source", "source": "source", "скважина": "well", "well": "well",
+        "вероятность": "event_probability", "probability": "event_probability",
+        "горизонт": "horizon_days", "horizon": "horizon_days",
+        "эффективность": "treatment_efficiency", "efficiency": "treatment_efficiency",
+        "цена": "product_price_per_m3", "price": "product_price_per_m3",
+        "оперпотери": "operating_loss_per_day", "operating": "operating_loss_per_day",
+        "стоимость": "treatment_cost", "cost": "treatment_cost",
+        "валюта": "currency", "currency": "currency",
+    }
+    values: dict[str, float | str | bool] = {}
+    errors: list[str] = []
+    for token in args:
+        raw_key, sep, raw = token.partition("=")
+        key = aliases.get(raw_key.casefold())
+        if not sep or key is None:
+            errors.append(f"неизвестный параметр: {html.escape(token)}")
+            continue
+        if key in {"operating_mode", "source", "well", "currency"}:
+            values[key] = raw.strip()
+        elif key == "wash_treatment":
+            if raw.casefold() not in {"1", "0", "да", "нет", "yes", "no", "true", "false"}:
+                errors.append("промывка: используйте да/нет")
+            else:
+                values[key] = raw.casefold() in {"1", "да", "yes", "true"}
+        else:
+            number = _to_float(raw)
+            if number is None or not math.isfinite(number):
+                errors.append(f"{html.escape(raw_key)}: требуется конечное число")
+            else:
+                values[key] = number / 100 if key.endswith("relative_change") else number
+    if not any(key in values for key in aliases.values() if key not in {
+        "well", "source", "currency", "event_probability", "horizon_days",
+        "treatment_efficiency", "product_price_per_m3", "operating_loss_per_day", "treatment_cost"
+    }):
+        errors.append("не задано ни одного изменения")
+    return values, errors
+
+
+def format_scenario_messages(item: DiagnosedWell, values: dict[str, float | str | bool]) -> list[str]:
+    change_keys = {key for key in galit.ScenarioChanges.__dataclass_fields__ if key != "effect_override"}
+    override = None
+    if "inhibitor_efficiency" in values:
+        override = galit.EffectOverride(
+            inhibitor_efficiency=float(values["inhibitor_efficiency"]),
+            source=str(values.get("source", "")) or None,
+        )
+    changes = galit.ScenarioChanges(
+        **{key: values[key] for key in change_keys if key in values}, effect_override=override,
+    )
+    economics = None
+    if "horizon_days" in values:
+        economics = galit.ScenarioEconomics(
+            horizon_days=float(values["horizon_days"]),
+            event_probability=float(values["event_probability"]) if "event_probability" in values else None,
+            treatment_efficiency=float(values["treatment_efficiency"]) if "treatment_efficiency" in values else None,
+            product_price_per_m3=float(values["product_price_per_m3"]) if "product_price_per_m3" in values else None,
+            operating_loss_per_day=float(values["operating_loss_per_day"]) if "operating_loss_per_day" in values else None,
+            treatment_cost=float(values["treatment_cost"]) if "treatment_cost" in values else None,
+            currency=str(values["currency"]) if "currency" in values else None,
+        )
+    result = galit.compare_scenario(item.case, changes, economics)
+    delta = result.delta
+    blocks = [
+        f"<b>Сценарий · {html.escape(result.well)}</b>",
+        f"Статус: {result.status.value}\nРиск: {result.before.integrated_risk:.3f} → {result.after.integrated_risk:.3f} "
+        f"(Δ {delta['integrated_risk']:+.3f})\nДебит нефти: {result.before.forecast_oil_rate_m3_day:.2f} → "
+        f"{result.after.forecast_oil_rate_m3_day:.2f} м³/сут",
+    ]
+    if result.economics:
+        b = result.economics.breakdown
+        unit = html.escape(result.economics.currency or "—")
+        blocks.append(f"Стоимость: {'—' if b.total_treatment_cost is None else f'{b.total_treatment_cost:.2f} {unit}'}\n"
+                      f"Предотвращённый ущерб: {'—' if b.potential_avoided_damage is None else f'{b.potential_avoided_damage:.2f} {unit}'}\n"
+                      f"Чистый эффект: {'—' if b.net_expected_effect is None else f'{b.net_expected_effect:.2f} {unit}'}\n"
+                      f"ROI: {'—' if b.roi_ratio is None else f'{b.roi_ratio:.2f}'}")
+    if result.missing_inputs:
+        blocks.append("Не хватает: " + html.escape(", ".join(result.missing_inputs)))
+    if result.warnings:
+        blocks.append("Предупреждения:\n" + "\n".join("• " + html.escape(x) for x in result.warnings))
+    blocks.append("Screening score не является вероятностью; причинный эффект не обещается.")
     return _forecast_chunks(blocks)
 
 
@@ -621,7 +718,7 @@ START_TEXT = (
     "3. Дебит нефти, м³/сут\n4. Дебит воды, м³/сут\n"
     "5. Газовый фактор, м³/м³\n6. WAT, °C\n\n"
     "Чтобы начать, нажмите «🔎 Новый расчёт».\n"
-    "Последние расчёты: /plan; прогноз: /forecast [скважина]; экономика: /economics; очистка — /plan_clear."
+    "Последние расчёты: /plan; прогноз: /forecast [скважина]; сценарий: /scenario; экономика: /economics; очистка — /plan_clear."
 )
 HELP_TEXT = (
     "<b>Справка</b>\n\n"
@@ -637,10 +734,11 @@ HELP_TEXT = (
     "<code>парафин=</code>, <code>температура=</code>, "
     "<code>градиент=</code>, <code>co2=</code>, <code>буферное=</code>. "
     "Десятичный разделитель — точка или запятая.\n\n"
-    "<b>План:</b> <code>/plan</code> — последние успешные расчёты этого чата; "
-    "<code>/forecast [скважина]</code> — честный прогноз для последнего расчёта или указанного имени; "
-    "<code>/economics</code> — экономика риска с явными probability/horizon/efficiency/price/cost/currency; "
-    "<code>/plan_clear</code> — очистить локальную историю. История ограничена и исчезает при перезапуске."
+    "<b>Команды:</b> <code>/plan</code>, <code>/forecast [скважина]</code>, "
+    "<code>/economics</code>, <code>/plan_clear</code>.\n"
+    "Сценарий: <code>/scenario oil_pct=-10 temperature=2 wash=yes</code>; "
+    "выбор: <code>well=Имя</code>; явный эффект: "
+    "<code>inhibitor_effect=0.8 source=паспорт</code>. История локальная и исчезает при перезапуске."
 )
 EXAMPLE_TEXT = (
     "<b>Пример исходных данных</b>\n\n"
@@ -750,6 +848,26 @@ async def cmd_forecast(message: Message) -> None:
         await message.answer(html.escape(str(exc)), reply_markup=MAIN_MENU)
         return
     for chunk in format_forecast_messages(item):
+        await message.answer(chunk, disable_web_page_preview=True, reply_markup=MAIN_MENU)
+
+
+@dp.message(Command("scenario"))
+async def cmd_scenario(message: Message) -> None:
+    args = (message.text or "").split()[1:]
+    values, errors = parse_scenario_args(args)
+    if errors:
+        example = "/scenario oil_pct=-10 temperature=2 wash=yes well=Речицкая-123"
+        await message.answer("Параметры сценария не приняты:\n· " + "\n· ".join(errors) +
+                             "\n\nПример:\n<code>" + example + "</code>", reply_markup=MAIN_MENU)
+        return
+    chat_id = message.chat.id if message.chat else 0
+    try:
+        item = select_forecast_diagnosis(RECENT_DIAGNOSES.get(chat_id), str(values.get("well", "")))
+        chunks = format_scenario_messages(item, values)
+    except (LookupError, ValueError) as exc:
+        await message.answer(html.escape(str(exc)), reply_markup=MAIN_MENU)
+        return
+    for chunk in chunks:
         await message.answer(chunk, disable_web_page_preview=True, reply_markup=MAIN_MENU)
 
 

@@ -1369,6 +1369,12 @@ def parse_optional_nonnegative(raw: str, label: str) -> float | None:
     return value
 
 
+def scenario_for_dashboard(case: WellCase, changes: galit.ScenarioChanges,
+                           economics: galit.ScenarioEconomics | None = None) -> galit.ScenarioComparison:
+    """Pure adapter used by the scenario tab and unit tests."""
+    return galit.compare_scenario(case, changes, economics)
+
+
 def risk_economics_for_dashboard(case: WellCase, *, probability: float | None,
                                  horizon_days: float, efficiency: float,
                                  event_downtime_days: float, treatment_downtime_days: float,
@@ -1819,10 +1825,10 @@ def main() -> None:
             st.caption(f"Ещё сигналов: {len(alerts) - 6}. Полный список — в ранжировании.")
 
     st.divider()
-    tab_plan, tab_rank, tab_profiles, tab_well, tab_economics, tab_forecast, tab_pilot = st.tabs(
+    tab_plan, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_pilot = st.tabs(
         ["План мастера", "Ранжирование фонда", "Профили T(z) · P(z)",
-         "Детально по скважине", "Экономика риска", "Прогноз во времени",
-         "Сравнение с baseline / Пилот"]
+         "Детально по скважине", "Что будет, если?", "Экономика риска",
+         "Прогноз во времени", "Сравнение с baseline / Пилот"]
     )
 
     # --- первая вкладка: тот же уже сформированный доменный план ---
@@ -1987,6 +1993,81 @@ def main() -> None:
             with st.expander("Оригинальные технические warnings"):
                 for warning in detail.warnings:
                     st.code(warning, language=None)
+
+    # --- полноценный сценарный конструктор ---
+    with tab_scenario:
+        st.markdown("### Конструктор «Что будет, если?»")
+        st.caption("Изменения дебита, давления и температуры идут в существующее ядро. Для промывки, режима и дозировки нужны явные эффекты; скрытых коэффициентов нет.")
+        scenario_name = st.selectbox("Скважина сценария", list(cases_by_name), key="scenario_well")
+        scenario_case = cases_by_name[scenario_name]
+        a, b, c = st.columns(3)
+        with a:
+            oil_pct = st.number_input("Изменение дебита нефти, %", value=0.0, key="scenario_oil_pct")
+            water_pct = st.number_input("Изменение дебита воды, %", value=0.0, key="scenario_water_pct")
+            pressure_mpa = st.number_input("Изменение буферного давления, МПа", value=0.0, key="scenario_pressure")
+        with b:
+            temperature_c = st.number_input("Изменение температуры, °C", value=0.0, key="scenario_temperature")
+            inhibitor_dose = st.number_input("Изменение дозировки ингибитора, мг/л", min_value=0.0, value=0.0, key="scenario_dose")
+            wash = st.checkbox("Промывка", key="scenario_wash")
+            mode = st.text_input("Новый режим эксплуатации", value="", key="scenario_mode")
+        with c:
+            override_enabled = st.checkbox("Есть документированный effect override", key="scenario_override")
+            override_eff = st.number_input("Итоговая эффективность ингибитора, 0–1", 0.0, 1.0, 0.0, key="scenario_override_eff")
+            override_source = st.text_input("Источник эффекта", value="", key="scenario_override_source")
+            st.markdown("**Экономика (необязательно)**")
+            probability_raw = st.text_input("Вероятность события, 0–1", value="", key="scenario_probability")
+            efficiency_raw = st.text_input("Эффективность мероприятия, 0–1", value="", key="scenario_econ_eff")
+            price_raw = st.text_input("Цена продукции / м³", value="", key="scenario_price")
+            cost_raw = st.text_input("Стоимость мероприятия", value="", key="scenario_cost")
+            currency = st.text_input("Валюта", value="", key="scenario_currency")
+        try:
+            override = (galit.EffectOverride(inhibitor_efficiency=float(override_eff),
+                        source=override_source or None) if override_enabled else None)
+            changes = galit.ScenarioChanges(
+                oil_rate_relative_change=float(oil_pct) / 100,
+                water_rate_relative_change=float(water_pct) / 100,
+                wellhead_pressure_delta_pa=float(pressure_mpa) * 1e6,
+                surface_temperature_delta_c=float(temperature_c),
+                inhibitor_dosage_delta_mg_l=float(inhibitor_dose) if inhibitor_dose else None,
+                wash_treatment=wash, operating_mode=mode or None, effect_override=override,
+            )
+            probability = parse_optional_nonnegative(probability_raw, "Вероятность")
+            econ_eff = parse_optional_nonnegative(efficiency_raw, "Эффективность")
+            price = parse_optional_nonnegative(price_raw, "Цена")
+            cost = parse_optional_nonnegative(cost_raw, "Стоимость")
+            economics = None
+            if any(value is not None for value in (probability, econ_eff, price, cost)) or currency:
+                economics = galit.ScenarioEconomics(
+                    horizon_days=30, event_probability=probability,
+                    treatment_efficiency=econ_eff, product_price_per_m3=price,
+                    operating_loss_per_day=0 if price is not None else None,
+                    treatment_cost=cost, currency=currency or None,
+                    probability_source="dashboard_explicit_input",
+                )
+            comparison = scenario_for_dashboard(scenario_case, changes, economics)
+            st.warning(f"Статус: {comparison.status.value}. Screening score не является вероятностью или причинной оценкой.")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Риск до → после", f"{comparison.before.integrated_risk:.3f} → {comparison.after.integrated_risk:.3f}", f"{comparison.delta['integrated_risk']:+.3f}")
+            m2.metric("Дебит до → после", f"{comparison.before.forecast_oil_rate_m3_day:.2f} → {comparison.after.forecast_oil_rate_m3_day:.2f} м³/сут")
+            breakdown = comparison.economics.breakdown if comparison.economics else None
+            unit = comparison.economics.currency if comparison.economics else None
+            m3.metric("Стоимость", "unavailable" if not breakdown or breakdown.total_treatment_cost is None else f"{breakdown.total_treatment_cost:.2f} {unit}")
+            m4.metric("Net effect / ROI", "unavailable" if not breakdown or breakdown.net_expected_effect is None else f"{breakdown.net_expected_effect:.2f} {unit} / {breakdown.roi_ratio if breakdown.roi_ratio is not None else '—'}")
+            st.dataframe(pd.DataFrame([
+                {"Механизм": MECH_RU.get(key, key), "До": comparison.before.severity[key],
+                 "После": comparison.after.severity[key], "Δ": comparison.delta["severity"][key]}
+                for key in comparison.before.severity
+            ]), width="stretch", hide_index=True)
+            if comparison.missing_inputs:
+                st.info("Missing inputs: " + ", ".join(comparison.missing_inputs))
+            for warning in comparison.warnings:
+                st.warning(warning)
+            with st.expander("Audit trail, формулы и допущения"):
+                st.json(comparison.audit_trail)
+                st.markdown("\n".join(f"- `{key}`: {value}" for key, value in comparison.formulas.items()))
+                st.markdown("\n".join(f"- {value}" for value in comparison.assumptions))
+        except ValueError as exc:
+            st.error(f"Сценарий не рассчитан: {exc}")
 
     # --- экономика риска: только явные денежные входы ---
     with tab_economics:

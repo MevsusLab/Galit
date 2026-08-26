@@ -60,6 +60,15 @@ from .risk_economics import (
     RiskEconomicsStatus,
     calculate_risk_economics,
 )
+from .scenarios import (
+    EffectOverride,
+    ScenarioChanges,
+    ScenarioComparison,
+    ScenarioEconomics,
+    ScenarioSnapshot,
+    ScenarioStatus,
+    compare_scenario,
+)
 from .scale import WaterAnalysis, halite_saturation_index, stiff_davis_index
 from .wax import WaxProperties, wax_onset_depth
 from .wellbore import (
@@ -107,6 +116,13 @@ __all__ = [
     "RiskEconomicsResult",
     "RiskEconomicsStatus",
     "calculate_risk_economics",
+    "EffectOverride",
+    "ScenarioChanges",
+    "ScenarioComparison",
+    "ScenarioEconomics",
+    "ScenarioSnapshot",
+    "ScenarioStatus",
+    "compare_scenario",
     "MECHANISM_WEIGHTS",
     "RiskPolicy",
     "RuntimeCalibration",

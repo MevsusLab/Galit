@@ -405,6 +405,59 @@ Unicode/case/whitespace-нормализации. Это bounded in-memory ис�
 
 ---
 
+## Конструктор сценариев «Что будет, если?»
+
+`galit/scenarios.py` выполняет immutable-сравнение одного `WellCase`: повторно использует `diagnose`, `forecast_well` и `calculate_risk_economics`, а не дублирует физику или экономику. Прямые изменения задаются в единицах модели: нефть/вода — м³/сут или относительная доля, буферное давление — Па или доля, температура — Δ°C. Дозировка ингибитора задаётся в мг/л, но сама по себе не преобразуется в физический эффект.
+
+Промывка, дозировка и режим эксплуатации не имеют универсального скрытого коэффициента. Если диагностическое ядро не принимает действие напрямую, требуется `effect_override` с явным `source`; иначе ответ `partial` содержит `missing_inputs` и предупреждение. `integrated_risk` и механизмные severity — screening score, не калиброванная вероятность и не доказательство причинности.
+
+### API
+
+Новый аддитивный контракт: `POST /api/v1/scenarios/compare`. Существующие endpoints не изменены.
+
+```json
+{
+  "well": { "...": "тот же WellCase JSON, что для /api/v1/diagnose" },
+  "changes": {
+    "oil_rate_relative_change": -0.10,
+    "wellhead_pressure_delta_pa": 200000,
+    "surface_temperature_delta_c": 2,
+    "inhibitor_dosage_delta_mg_l": 20,
+    "wash_treatment": true,
+    "operating_mode": "ШГН",
+    "effect_override": {
+      "inhibitor_efficiency": 0.8,
+      "source": "паспорт реагента / полевой тест",
+      "assumptions": ["эффект применим к данной скважине"]
+    }
+  },
+  "economics": {
+    "horizon_days": 30,
+    "event_probability": 0.4,
+    "treatment_efficiency": 0.7,
+    "product_price_per_m3": 100,
+    "operating_loss_per_day": 0,
+    "treatment_cost": 500,
+    "currency": "BYN"
+  }
+}
+```
+
+Ответ стабильно содержит `status`, `before`, `after`, `delta`, `economics`, `applied_changes`, `formulas`, `assumptions`, `warnings`, `missing_inputs` и `audit_trail`. Экономика использует формулы `risk_economics`: предотвращённый ущерб = ожидаемый ущерб × явно заданная эффективность; net effect = предотвращённый ущерб − полная стоимость; ROI = net effect / полная стоимость. При отсутствии вероятности, ставок, стоимости или валюты значения остаются `partial/unavailable` — screening risk не подставляется как вероятность.
+
+### Streamlit и Telegram
+
+В dashboard после загрузки фонда доступна отдельная вкладка **«Что будет, если?»**: выбор скважины, изменения режима, before/after карточки, delta механизмов, стоимость, предотвращённый ущерб, net effect/ROI, missing inputs и audit trail. Денежные ставки пусты по умолчанию.
+
+Бот использует последний расчёт либо `well=Имя`:
+
+```text
+/scenario oil_pct=-10 temperature=2 wash=yes well=Речицкая-123
+/scenario inhibitor=20 inhibitor_effect=0.8 source=полевой_тест horizon=30 probability=0.4 efficiency=0.7 price=100 cost=500 currency=BYN
+```
+
+Ответ HTML-escaped и разбивается по лимиту Telegram. Для промывки/режима без override он честно сообщает отсутствие физического эффекта. Полный сценарий не является обещанием точности: перед решением нужны промысловая проверка, совместимость реагентов и инженерное утверждение.
+
 ## 6. Какие данные нужны
 
 Это главный раздел. Ниже — **всё**, что нужно ввести, с единицами,

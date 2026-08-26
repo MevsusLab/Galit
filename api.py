@@ -380,6 +380,65 @@ class RiskEconomicsResponse(BaseModel):
     forecast_link: dict[str, Any]
 
 
+class EffectOverrideIn(BaseModel):
+    inhibitor_efficiency: float | None = Field(default=None, ge=0, le=1)
+    oil_rate_delta_m3_day: float | None = None
+    oil_rate_relative_change: float | None = None
+    water_rate_delta_m3_day: float | None = None
+    water_rate_relative_change: float | None = None
+    source: str | None = None
+    assumptions: tuple[str, ...] = ()
+
+
+class ScenarioChangesIn(BaseModel):
+    oil_rate_delta_m3_day: float | None = None
+    oil_rate_relative_change: float | None = None
+    water_rate_delta_m3_day: float | None = None
+    water_rate_relative_change: float | None = None
+    wellhead_pressure_delta_pa: float | None = None
+    wellhead_pressure_relative_change: float | None = None
+    surface_temperature_delta_c: float | None = None
+    inhibitor_dosage_delta_mg_l: float | None = Field(default=None, ge=0)
+    wash_treatment: bool = False
+    operating_mode: str | None = None
+    effect_override: EffectOverrideIn | None = None
+
+
+class ScenarioEconomicsIn(BaseModel):
+    horizon_days: float = Field(gt=0, le=3650)
+    event_probability: float | None = Field(default=None, ge=0, le=1)
+    treatment_efficiency: float | None = Field(default=None, ge=0, le=1)
+    event_downtime_days: float = Field(default=0, ge=0)
+    treatment_downtime_days: float = Field(default=0, ge=0)
+    product_price_per_m3: float | None = Field(default=None, ge=0)
+    operating_loss_per_day: float | None = Field(default=None, ge=0)
+    treatment_cost: float | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=1, max_length=12)
+    production_loss_fraction: float = Field(default=1, ge=0, le=1)
+    probability_source: str = Field(default="explicit_input", min_length=1)
+
+
+class ScenarioCompareRequest(BaseModel):
+    well: WellCaseIn
+    changes: ScenarioChangesIn
+    economics: ScenarioEconomicsIn | None = None
+
+
+class ScenarioCompareResponse(BaseModel):
+    status: str
+    well: str
+    before: dict[str, Any]
+    after: dict[str, Any]
+    delta: dict[str, Any]
+    economics: dict[str, Any] | None
+    applied_changes: tuple[dict[str, Any], ...]
+    formulas: dict[str, str]
+    assumptions: tuple[str, ...]
+    warnings: tuple[str, ...]
+    missing_inputs: tuple[str, ...]
+    audit_trail: dict[str, Any]
+
+
 # --------------------------------------------------------------------------
 # Response assembly
 # --------------------------------------------------------------------------
@@ -703,6 +762,32 @@ async def risk_economics_endpoint(payload: RiskEconomicsRequest) -> RiskEconomic
         limitations=result.limitations,
         forecast_link=forecast_link,
     )
+
+
+@app.post(
+    "/api/v1/scenarios/compare", response_model=ScenarioCompareResponse,
+    summary="Compare an auditable what-if scenario",
+    description=("Additive before/after contract. Screening scores are not probabilities; "
+                 "operational actions affect physics only through explicit sourced overrides."),
+)
+async def scenario_compare_endpoint(payload: ScenarioCompareRequest) -> ScenarioCompareResponse:
+    try:
+        changes_data = payload.changes.model_dump()
+        override_data = changes_data.pop("effect_override")
+        override = galit.EffectOverride(**override_data) if override_data else None
+        changes = galit.ScenarioChanges(**changes_data, effect_override=override)
+        economics = (galit.ScenarioEconomics(**payload.economics.model_dump())
+                     if payload.economics else None)
+        result = await run_in_threadpool(
+            galit.compare_scenario, _to_well_case(payload.well), changes, economics,
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    data = asdict(result)
+    data["status"] = result.status.value
+    if result.economics is not None:
+        data["economics"]["status"] = result.economics.status.value
+    return ScenarioCompareResponse(**data)
 
 
 @app.post(
