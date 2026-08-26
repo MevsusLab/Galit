@@ -57,6 +57,7 @@ class ForecastSnapshot:
     oil_rate_m3_day: float | None = None
     quality: str = "good"
     source: str = "measured"
+    regime_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.well.strip():
@@ -149,6 +150,8 @@ class ForecastCalibrationEvidence:
     mechanisms: tuple[ForecastMechanism, ...]
     probabilities: Mapping[ForecastMechanism, float] = field(default_factory=dict)
     synthetic: bool = False
+    probability_horizon_days: int | None = None
+    endpoints: Mapping[ForecastMechanism, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.artifact_id.strip() or not self.dataset_id.strip():
@@ -169,7 +172,37 @@ class ForecastCalibrationEvidence:
             raise ValueError("calibrated probabilities must be finite and within [0, 1]")
         if set(probabilities) - set(mechanisms):
             raise ValueError("probabilities may only reference declared mechanisms")
+        if self.probability_horizon_days is not None and self.probability_horizon_days < 1:
+            raise ValueError("probability_horizon_days must be positive")
+        endpoints = {ForecastMechanism(key): str(value) for key, value in self.endpoints.items()}
+        if set(endpoints) - set(mechanisms):
+            raise ValueError("endpoints may only reference declared mechanisms")
         object.__setattr__(self, "probabilities", MappingProxyType(probabilities))
+        object.__setattr__(self, "endpoints", MappingProxyType(endpoints))
+
+
+@dataclass(frozen=True)
+class TemporalEvidence:
+    """Machine-readable evidence behind a temporal estimate (additive contract)."""
+
+    points: int = 0
+    span_days: float | None = None
+    trend_consistency: float | None = None
+    quality: str = "insufficient"
+    regime_id: str | None = None
+    regime_compatible: bool = True
+
+
+@dataclass(frozen=True)
+class ForecastCalibrationMetadata:
+    artifact_id: str | None = None
+    dataset_id: str | None = None
+    validation_status: str = "not_supplied"
+    holdout_n: int | None = None
+    brier_score: float | None = None
+    endpoint: str | None = None
+    horizon_days: int | None = None
+    matched: bool = False
 
 
 @dataclass(frozen=True)
@@ -230,6 +263,10 @@ class ForecastEvent:
     limitations: tuple[str, ...]
     production_ready: bool
     actionable: bool
+    probability_endpoint: str | None = None
+    probability_horizon_days: int | None = None
+    evidence: TemporalEvidence = field(default_factory=TemporalEvidence)
+    calibration: ForecastCalibrationMetadata = field(default_factory=ForecastCalibrationMetadata)
 
     def __post_init__(self) -> None:
         if self.status is ForecastStatus.SCREENING and self.probability is not None:
@@ -245,6 +282,10 @@ class ForecastEvent:
             value = getattr(self, name)
             if value is not None and not math.isfinite(value):
                 raise ValueError(f"{name} must be finite")
+        if self.probability is not None and (not self.probability_endpoint or self.probability_horizon_days is None):
+            raise ValueError("probability requires a matched endpoint and horizon")
+        if self.probability is not None and not self.calibration.matched:
+            raise ValueError("probability requires matched validated calibration metadata")
         if self.probability is not None and not 0.0 <= self.probability <= 1.0:
             raise ValueError("probability must be within [0, 1]")
         if self.risk_band is not None and (len(self.risk_band) != 2 or
@@ -284,6 +325,7 @@ class _Trend:
     span_days: float
     points: int
     consistency: float
+    regime_id: str | None = None
     limitations: tuple[str, ...] = ()
 
 
@@ -324,7 +366,11 @@ def forecast_well(
         measured_at = corrosion_integrity.measured_at.astimezone(timezone.utc)
         if measured_at > as_of:
             raise ValueError("corrosion integrity measurement is after as_of")
+    diagnosis_ready = bool(diagnosis.quality.production_ready)
     calibration_valid, calibration_reason = _valid_calibration(calibration, history, cfg)
+    if not diagnosis_ready:
+        calibration_valid = False
+        calibration_reason = "diagnosis.quality.production_ready is false"
 
     events: list[ForecastEvent] = []
     thresholds = {
@@ -396,7 +442,10 @@ def _trend_event(well: str, mechanism: ForecastMechanism, fallback_current: floa
         required=() if status is ForecastStatus.CALIBRATED else ("Holdout-validated event calibration artifact",),
         limitations=(*history_notes, *trend.limitations,
                      "Trend crossing is a scenario, not a failure date."),
-        production_ready=status is ForecastStatus.CALIBRATED, actionable=True)
+        production_ready=status is ForecastStatus.CALIBRATED, actionable=True,
+        evidence=TemporalEvidence(trend.points, trend.span_days, trend.consistency, "good",
+                                  trend.regime_id, True),
+        calibration_evidence=calibration)
 
 
 def _corrosion_event(diagnosis: DiagnosisResult, case: WellCase,
@@ -449,7 +498,8 @@ def _corrosion_event(diagnosis: DiagnosisResult, case: WellCase,
         limitations=(*history_notes, trend_reason,
                      "Screening rate is not a remaining-life certification.",
                      calibration_reason if not calibration_valid else ""),
-        production_ready=status is ForecastStatus.CALIBRATED, actionable=True)
+        production_ready=status is ForecastStatus.CALIBRATED, actionable=True,
+        calibration_evidence=calibration)
 
 
 def _production_event(diagnosis: DiagnosisResult, case: WellCase,
@@ -502,11 +552,18 @@ def _production_event(diagnosis: DiagnosisResult, case: WellCase,
         required=() if status is ForecastStatus.CALIBRATED else ("Holdout-validated decline calibration artifact",),
         limitations=(*history_notes, *trend.limitations,
                      "Trend continuation is a scenario; it is not a guaranteed decline date."),
-        production_ready=status is ForecastStatus.CALIBRATED, actionable=True)
+        production_ready=status is ForecastStatus.CALIBRATED, actionable=True,
+        evidence=TemporalEvidence(trend.points, trend.span_days, trend.consistency, "good",
+                                  trend.regime_id, True),
+        calibration_evidence=calibration)
 
 
 def _trend_for(snapshots: Sequence[ForecastSnapshot], metric: str,
                cfg: ForecastConfig, *, increasing: bool) -> tuple[_Trend | None, str]:
+    metric_rows = [row for row in snapshots if row.quality == "good" and getattr(row, metric) is not None]
+    regimes = {row.regime_id for row in metric_rows}
+    if len(regimes) > 1:
+        return None, f"{metric} crosses incompatible operating regimes; trend blocked."
     points = _metric_points(snapshots, metric)
     if len(points) < cfg.min_history_points:
         return None, f"Insufficient valid {metric} history ({len(points)}/{cfg.min_history_points} points)."
@@ -538,7 +595,9 @@ def _trend_for(snapshots: Sequence[ForecastSnapshot], metric: str,
     if any(snapshot.quality == "questionable" and getattr(snapshot, metric) is not None
            for snapshot in snapshots):
         notes = ("Questionable-quality observations were excluded.",)
-    return _Trend(points[-1][1], slope, low, high, span, len(points), consistency, notes), ""
+    regime_id = next(iter(regimes)) if regimes else None
+    return _Trend(points[-1][1], slope, low, high, span, len(points), consistency,
+                  regime_id, notes), ""
 
 
 def _metric_points(snapshots: Sequence[ForecastSnapshot], metric: str) -> list[tuple[datetime, float]]:
@@ -611,7 +670,11 @@ def _calibrated_fields(mechanism: ForecastMechanism,
                        evidence: ForecastCalibrationEvidence | None,
                        valid: bool) -> tuple[ForecastStatus, float | None]:
     if valid and evidence is not None and mechanism in evidence.mechanisms:
-        return ForecastStatus.CALIBRATED, evidence.probabilities.get(mechanism)
+        probability = evidence.probabilities.get(mechanism)
+        endpoint = evidence.endpoints.get(mechanism)
+        if probability is not None and (not endpoint or evidence.probability_horizon_days is None):
+            return ForecastStatus.SCREENING, None
+        return ForecastStatus.CALIBRATED, probability
     return ForecastStatus.SCREENING, None
 
 
@@ -622,7 +685,9 @@ def _event(well: str, mechanism: ForecastMechanism, status: ForecastStatus, *,
            bounds: tuple[float, float] | None = None, probability: float | None = None,
            risk_band: tuple[float, float] | None = None,
            likelihood: LikelihoodCategory = LikelihoodCategory.NOT_ASSESSED,
-           production_ready: bool = False, actionable: bool = False) -> ForecastEvent:
+           production_ready: bool = False, actionable: bool = False,
+           evidence: TemporalEvidence | None = None,
+           calibration_evidence: ForecastCalibrationEvidence | None = None) -> ForecastEvent:
     start, end = bounds if bounds is not None else (None, None)
     start_date = end_date = None
     if as_of is not None and start is not None:
@@ -630,11 +695,24 @@ def _event(well: str, mechanism: ForecastMechanism, status: ForecastStatus, *,
         end_date = (as_of + timedelta(days=math.ceil(end))).date()
     clean_limitations = tuple(item for item in limitations if item)
     stable_id = str(uuid5(NAMESPACE_URL, f"galit:forecast:v1:{well}:{mechanism.value}"))
+    endpoint = calibration_evidence.endpoints.get(mechanism) if calibration_evidence else None
+    probability_horizon = calibration_evidence.probability_horizon_days if calibration_evidence else None
+    matched = bool(probability is not None and endpoint and probability_horizon is not None)
+    calibration_meta = ForecastCalibrationMetadata(
+        artifact_id=calibration_evidence.artifact_id if calibration_evidence else None,
+        dataset_id=calibration_evidence.dataset_id if calibration_evidence else None,
+        validation_status=calibration_evidence.validation_status if calibration_evidence else "not_supplied",
+        holdout_n=calibration_evidence.holdout_n if calibration_evidence else None,
+        brier_score=calibration_evidence.brier_score if calibration_evidence else None,
+        endpoint=endpoint, horizon_days=probability_horizon, matched=matched,
+    )
     return ForecastEvent(stable_id, well, mechanism, _TITLES[mechanism], status,
                          start, end, start_date, end_date, probability, risk_band,
                          likelihood, current, threshold, basis, method,
                          tuple(assumptions), tuple(required), clean_limitations,
-                         production_ready, actionable)
+                         production_ready and matched, actionable,
+                         endpoint if matched else None, probability_horizon if matched else None,
+                         evidence or TemporalEvidence(), calibration_meta)
 
 
 def _severity(diagnosis: DiagnosisResult, mechanism: ForecastMechanism) -> float:
@@ -694,7 +772,7 @@ def _quantile(values: Sequence[float], q: float) -> float:
 
 __all__ = [
     "CorrosionIntegrityInput", "ForecastCalibrationEvidence", "ForecastConfig",
-    "ForecastEvent", "ForecastHistory", "ForecastMechanism", "ForecastSnapshot",
+    "ForecastCalibrationMetadata", "ForecastEvent", "ForecastHistory", "ForecastMechanism", "ForecastSnapshot",
     "ForecastStatus", "ForecastSummary", "LikelihoodCategory",
-    "ObservedForecastEvent", "WellForecast", "forecast_well",
+    "ObservedForecastEvent", "TemporalEvidence", "WellForecast", "forecast_well",
 ]

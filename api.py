@@ -212,6 +212,7 @@ class ForecastSnapshotIn(BaseModel):
     oil_rate_m3_day: float | None = Field(default=None, ge=0)
     quality: str = Field(default="good", pattern="^(good|questionable|bad)$")
     source: str = Field(default="measured", pattern="^(measured|derived|laboratory)$")
+    regime_id: str | None = None
 
     @field_validator("timestamp")
     @classmethod
@@ -273,6 +274,8 @@ class ForecastCalibrationIn(BaseModel):
     mechanisms: list[galit.ForecastMechanism]
     probabilities: dict[galit.ForecastMechanism, Annotated[float, Field(ge=0, le=1)]] = Field(default_factory=dict)
     synthetic: bool = False
+    probability_horizon_days: int | None = Field(default=None, ge=1)
+    endpoints: dict[galit.ForecastMechanism, str] = Field(default_factory=dict)
 
 
 class ForecastRequest(BaseModel):
@@ -315,6 +318,10 @@ class ForecastEventOut(BaseModel):
     limitations: tuple[str, ...]
     production_ready: bool
     actionable: bool
+    probability_endpoint: str | None
+    probability_horizon_days: int | None
+    evidence: dict[str, Any]
+    calibration: dict[str, Any]
 
 
 class ForecastResponse(BaseModel):

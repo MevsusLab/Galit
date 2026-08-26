@@ -28,6 +28,7 @@ from .integrated import (
 from .forecast import (
     CorrosionIntegrityInput,
     ForecastCalibrationEvidence,
+    ForecastCalibrationMetadata,
     ForecastConfig,
     ForecastEvent,
     ForecastHistory,
@@ -37,6 +38,7 @@ from .forecast import (
     ForecastSummary,
     LikelihoodCategory,
     ObservedForecastEvent,
+    TemporalEvidence,
     WellForecast,
     forecast_well,
 )
@@ -64,6 +66,7 @@ from .wellbore import (
 __all__ = [
     "CorrosionIntegrityInput",
     "ForecastCalibrationEvidence",
+    "ForecastCalibrationMetadata",
     "ForecastConfig",
     "ForecastEvent",
     "ForecastHistory",
@@ -73,6 +76,7 @@ __all__ = [
     "ForecastSummary",
     "LikelihoodCategory",
     "ObservedForecastEvent",
+    "TemporalEvidence",
     "WellForecast",
     "forecast_well",
     "BASELINE_CALIBRATION",

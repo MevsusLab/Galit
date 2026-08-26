@@ -116,7 +116,10 @@ def test_calibrated_is_gated_by_valid_metrics_and_probability_is_artifact_only()
     event = by_mechanism(forecast_well(diagnosis(), case(), history=history, as_of=AS_OF,
         calibration=invalid), ForecastMechanism.WAX)
     assert event.status is ForecastStatus.SCREENING and event.probability is None
-    valid = replace(invalid, validation_status="holdout-validated")
+    valid = replace(
+        invalid, validation_status="holdout-validated", probability_horizon_days=90,
+        endpoints={ForecastMechanism.WAX: "wax_threshold_within_90_days"},
+    )
     event = by_mechanism(forecast_well(diagnosis(), case(), history=history, as_of=AS_OF,
         calibration=valid), ForecastMechanism.WAX)
     assert event.status is ForecastStatus.CALIBRATED and event.probability == .76

@@ -1276,7 +1276,7 @@ def fig_profiles(results: list[DiagnosisResult], labels: list[str],
 
 FORECAST_HISTORY_COLUMNS = (
     "well", "timestamp", "wax_severity", "halite_severity", "calcite_severity",
-    "corrosion_wall_loss_mm", "oil_rate_m3_day", "quality", "source",
+    "corrosion_wall_loss_mm", "oil_rate_m3_day", "quality", "source", "regime_id",
 )
 
 
@@ -1298,27 +1298,40 @@ def forecast_history_from_csv(data: bytes) -> galit.ForecastHistory:
                 values[column] = float(row[column])
         for column, default in (("quality", "good"), ("source", "measured")):
             values[column] = str(row[column]) if column in frame.columns and pd.notna(row[column]) else default
+        if "regime_id" in frame.columns and pd.notna(row.get("regime_id")):
+            values["regime_id"] = str(row["regime_id"])
         snapshots.append(galit.ForecastSnapshot(**values))
     return galit.ForecastHistory(tuple(snapshots))
 
 
-def fig_forecast_timeline(forecast: galit.WellForecast) -> go.Figure:
-    """Render only events whose contract actually supplies a dated window."""
-    dated = [event for event in forecast.events if event.horizon_start_date is not None]
+def fig_forecast_timeline(forecast: galit.WellForecast, *, calendar: bool = True) -> go.Figure:
+    """Render honest range bars only for events with a computed temporal window."""
+    dated = [event for event in forecast.events if event.horizon_start_days is not None]
     fig = go.Figure()
     for event in dated:
-        start = event.horizon_start_date
-        end = event.horizon_end_date or start
+        if calendar:
+            start = event.horizon_start_date
+            end = event.horizon_end_date or start
+            base, width = start, max((end - start).days, 0) + 1
+            window = f"{start.isoformat()} — {end.isoformat()}"
+        else:
+            base = event.horizon_start_days
+            width = event.horizon_end_days - event.horizon_start_days
+            window = f"{event.horizon_start_days:.1f}–{event.horizon_end_days:.1f} дней"
         fig.add_trace(go.Bar(
-            x=[max((end - start).days, 0) + 1], y=[event.title], base=[start],
-            orientation="h", name=event.status.value, showlegend=False,
+            x=[width], y=[event.title], base=[base], orientation="h",
+            name=event.status.value, showlegend=False,
             marker_color=GREEN_700 if event.status.value == "calibrated" else STATUS_WARN,
-            customdata=[[start.isoformat(), end.isoformat(), event.status.value]],
-            hovertemplate="%{y}<br>%{customdata[0]} — %{customdata[1]}<br>%{customdata[2]}<extra></extra>",
+            customdata=[[window, event.status.value]],
+            hovertemplate="%{y}<br>%{customdata[0]}<br>%{customdata[1]}<extra></extra>",
         ))
+    if dated:
+        marker = forecast.as_of.date() if calendar and forecast.as_of else 0
+        fig.add_vline(x=marker, line_dash="dash", line_color=STATUS_CRIT,
+                      annotation_text="сегодня")
     fig.update_layout(height=max(220, 65 * len(dated)), barmode="overlay",
-                      xaxis_title="Календарное окно", yaxis_title="",
-                      font=dict(family=FONT_FAMILY, color=INK),
+                      xaxis_title="Календарное окно" if calendar else "Дни от расчёта",
+                      yaxis_title="", font=dict(family=FONT_FAMILY, color=INK),
                       paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
                       margin=dict(l=10, r=10, t=20, b=10))
     return fig
@@ -1969,16 +1982,33 @@ def main() -> None:
                 st.info("Фонд использован только как snapshot. Временная история не загружена; недоступные окна не дорисовываются.")
             dated = [event for event in forecast.events if event.horizon_start_date is not None]
             undated = [event for event in forecast.events if event.horizon_start_date is None]
+            mode = st.radio("Шкала timeline", ("Календарь", "Дни от расчёта"),
+                            horizontal=True, key="forecast_timeline_mode")
             if dated:
-                st.plotly_chart(fig_forecast_timeline(forecast), width="stretch",
-                                config={"displaylogo": False})
+                st.plotly_chart(fig_forecast_timeline(forecast, calendar=mode == "Календарь"),
+                                width="stretch", config={"displaylogo": False})
             else:
                 st.info("Датированных событий нет: контракт вернул только screening/unavailable без временных окон.")
-            st.markdown("### Все события и основания")
-            st.dataframe(forecast_event_frame(forecast.events), width="stretch", hide_index=True)
+            st.markdown("### Механизмы: trust, evidence и calibration")
+            for event in forecast.events:
+                evidence = event.evidence
+                evidence_chip = (f"evidence · {evidence.points} точек · {evidence.span_days:.0f} сут"
+                                 if evidence.span_days is not None else "evidence · недостаточно")
+                calibration_chip = ("calibration · matched" if event.calibration.matched
+                                    else f"calibration · {event.calibration.validation_status}")
+                with st.expander(f"{event.title} · {event.status.value}"):
+                    st.caption(f"trust · {'production-ready' if event.production_ready else 'screening'}  |  "
+                               f"{evidence_chip}  |  {calibration_chip}")
+                    st.markdown(f"**Основание:** {event.basis}\n\n**Метод:** {event.method}")
+                    st.markdown("**Assumptions**\n" + "\n".join(f"- {x}" for x in event.assumptions) if event.assumptions else "**Assumptions:** —")
+                    st.markdown("**Limitations**\n" + "\n".join(f"- {x}" for x in event.limitations) if event.limitations else "**Limitations:** —")
+                    st.markdown("**Required inputs**\n" + "\n".join(f"- {x}" for x in event.required_inputs) if event.required_inputs else "**Required inputs:** —")
             if undated:
-                st.markdown("### Без даты — отдельно от timeline")
-                st.dataframe(forecast_event_frame(undated), width="stretch", hide_index=True)
+                st.markdown("### Unavailable / без даты")
+                for event in undated:
+                    st.warning(f"{event.title}: дата недоступна. " +
+                               ("Требуется: " + "; ".join(event.required_inputs)
+                                if event.required_inputs else event.basis))
         except (ValueError, KeyError) as exc:
             st.error(f"Прогноз не рассчитан: {exc}")
         with st.expander("CSV schema истории"):
