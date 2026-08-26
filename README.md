@@ -727,6 +727,52 @@ from galit.integrated import MECHANISM_WEIGHTS
 
 ## 9. Экономика пилота и break-even
 
+### Экономика риска по одной скважине
+
+`galit/risk_economics.py` и `POST /api/v1/risk-economics` используют только
+явные входы. Цена, стоимость обработки, валюта и вероятность не подставляются
+из демо. При нехватке данных статус — `partial`/`unavailable`, значения — `null`.
+Все денежные входы должны быть в одной валюте; конвертация не выполняется.
+
+Формулы: `gross_loss = oil_rate × horizon × loss_fraction`;
+`expected_loss = gross_loss × probability`;
+`expected_damage = expected_loss × price + probability × event_downtime × (oil_rate × price + operating_loss)`;
+`avoided_damage = expected_damage × treatment_efficiency`;
+`treatment_total = treatment_cost + treatment_downtime × (oil_rate × price + operating_loss)`;
+`net_effect = avoided_damage − treatment_total`;
+`ROI = net_effect / treatment_total`; `payback_ratio = treatment_total / avoided_damage`.
+При нулевом знаменателе ROI/payback равны `null`.
+
+Явный тестовый сценарий 8 000/31 000/23 000 BYN:
+
+```json
+{
+  "well": {"...": "WellCase", "rate": {"q_oil_m3d": 1}},
+  "economics": {
+    "event_probability": 1, "horizon_days": 31,
+    "treatment_efficiency": 1, "event_downtime_days": 0,
+    "treatment_downtime_days": 0, "product_price_per_m3": 1000,
+    "operating_loss_per_day": 0, "treatment_cost": 8000, "currency": "BYN"
+  }
+}
+```
+
+Он даёт предотвращаемый ущерб 31 000 BYN и чистый эффект 23 000 BYN только
+из-за этих входов и не является универсальной ставкой. Temporal forecast
+используется лишь при `use_forecast_probability=true` и наличии валидированной
+calibrated probability; screening risk автоматически в вероятность не переводится.
+
+На сайте откройте вкладку «Экономика риска»; пустые ставки показываются как
+недоступные. В боте сначала выполните `/aspo`, затем, например:
+
+```text
+/economics probability=1 horizon=31 efficiency=1 event_days=0 treatment_days=0 price=1000 operating=0 cost=8000 currency=BYN
+```
+
+Отчёт бота разбивается на части до лимита сообщения; невалидные/неполные входы
+возвращают инструкцию без выдуманных значений.
+
+
 Главный расчёт — не обещание годового эффекта, а проверяемая окупаемость
 shadow-пилота. Стоимость пилота и ценность одной предотвращённой обработки,
 одного отказа, суток простоя и сохранённой тонны задаются только как явные

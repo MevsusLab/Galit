@@ -228,6 +228,95 @@ def format_forecast_messages(item: DiagnosedWell) -> list[str]:
     return _forecast_chunks(blocks)
 
 
+def parse_economics_args(args: list[str]) -> tuple[dict[str, float | str], list[str]]:
+    """Parse explicit /economics inputs; no monetary defaults are applied."""
+    aliases = {
+        "вероятность": "event_probability", "probability": "event_probability",
+        "горизонт": "horizon_days", "horizon": "horizon_days",
+        "эффективность": "treatment_efficiency", "efficiency": "treatment_efficiency",
+        "простой_события": "event_downtime_days", "event_days": "event_downtime_days",
+        "простой_обработки": "treatment_downtime_days", "treatment_days": "treatment_downtime_days",
+        "цена": "product_price_per_m3", "price": "product_price_per_m3",
+        "оперпотери": "operating_loss_per_day", "operating": "operating_loss_per_day",
+        "стоимость": "treatment_cost", "cost": "treatment_cost",
+        "валюта": "currency", "currency": "currency",
+        "доля_потери": "production_loss_fraction", "loss_fraction": "production_loss_fraction",
+        "скважина": "well", "well": "well",
+    }
+    values: dict[str, float | str] = {}
+    errors: list[str] = []
+    for token in args:
+        key_raw, separator, raw = token.partition("=")
+        key = aliases.get(key_raw.casefold())
+        if not separator or key is None:
+            errors.append(f"неизвестный параметр: {html.escape(token)}")
+            continue
+        if key in {"currency", "well"}:
+            if not raw.strip():
+                errors.append(f"{html.escape(key_raw)}: пустое значение")
+            else:
+                values[key] = raw.strip()
+            continue
+        value = _to_float(raw)
+        if value is None:
+            errors.append(f"{html.escape(key_raw)}: не число")
+        elif value < 0:
+            errors.append(f"{html.escape(key_raw)}: значение не может быть отрицательным")
+        else:
+            values[key] = value
+    required = ("event_probability", "horizon_days", "treatment_efficiency",
+                "event_downtime_days", "treatment_downtime_days", "product_price_per_m3",
+                "operating_loss_per_day", "treatment_cost", "currency")
+    missing = [name for name in required if name not in values]
+    if missing:
+        errors.append("не заданы обязательные экономические входы: " + ", ".join(missing))
+    for name in ("event_probability", "treatment_efficiency", "production_loss_fraction"):
+        if name in values and float(values[name]) > 1:
+            errors.append(f"{name}: требуется значение 0…1")
+    if "horizon_days" in values and float(values["horizon_days"]) <= 0:
+        errors.append("horizon_days должен быть больше нуля")
+    return values, errors
+
+
+def format_economics_messages(item: DiagnosedWell,
+                              values: dict[str, float | str]) -> list[str]:
+    """Render an escaped, bounded report from explicit single-currency inputs."""
+    result = galit.calculate_risk_economics(galit.RiskEconomicsInput(
+        event_probability=float(values["event_probability"]),
+        horizon_days=float(values["horizon_days"]),
+        treatment_efficiency=float(values["treatment_efficiency"]),
+        event_downtime_days=float(values["event_downtime_days"]),
+        treatment_downtime_days=float(values["treatment_downtime_days"]),
+        oil_rate_m3_day=item.case.rate.q_oil_m3d,
+        product_price_per_m3=float(values["product_price_per_m3"]),
+        operating_loss_per_day=float(values["operating_loss_per_day"]),
+        treatment_cost=float(values["treatment_cost"]),
+        currency=str(values["currency"]),
+        production_loss_fraction=float(values.get("production_loss_fraction", 1.0)),
+        probability_source="telegram_explicit_input",
+    ))
+    b = result.breakdown
+    currency = html.escape(result.currency or "—")
+    def money(value: float | None) -> str:
+        return "недоступно" if value is None else f"{value:,.2f} {currency}".replace(",", " ")
+    blocks = [
+        f"<b>Экономика риска · {html.escape(item.case.name)}</b>",
+        f"Статус: {result.status.value} · валюта: {currency}",
+        f"Ожидаемая потеря добычи: {'недоступно' if b.expected_production_loss_m3 is None else f'{b.expected_production_loss_m3:.2f} м³'}\n"
+        f"В деньгах: {money(b.expected_production_loss_money)}\n"
+        f"Ожидаемая стоимость простоя: {money(b.expected_event_downtime_cost)}",
+        f"Обработка: {money(b.recommended_treatment_cost)}\n"
+        f"Простой обработки: {money(b.treatment_downtime_cost)}\n"
+        f"Полная стоимость мероприятия: {money(b.total_treatment_cost)}",
+        f"Возможный предотвращённый ущерб: {money(b.potential_avoided_damage)}\n"
+        f"Чистый ожидаемый эффект: {money(b.net_expected_effect)}\n"
+        f"ROI: {'недоступно' if b.roi_ratio is None else f'{b.roi_ratio:.2f}'} · "
+        f"payback ratio: {'недоступно' if b.payback_ratio is None else f'{b.payback_ratio:.2f}'}",
+        "Допущения: постоянные дебит/цена на горизонте; эффективность — доля предотвращаемого ущерба; конвертация валют не выполняется.",
+    ]
+    return _forecast_chunks(blocks)
+
+
 def format_plan_messages(items: list[DiagnosedWell], top: int = 10) -> list[str]:
     """Build escaped compact HTML chunks within Telegram's message limit."""
     if not items:
@@ -532,7 +621,7 @@ START_TEXT = (
     "3. Дебит нефти, м³/сут\n4. Дебит воды, м³/сут\n"
     "5. Газовый фактор, м³/м³\n6. WAT, °C\n\n"
     "Чтобы начать, нажмите «🔎 Новый расчёт».\n"
-    "Последние расчёты: /plan; прогноз: /forecast [скважина]; очистка — /plan_clear."
+    "Последние расчёты: /plan; прогноз: /forecast [скважина]; экономика: /economics; очистка — /plan_clear."
 )
 HELP_TEXT = (
     "<b>Справка</b>\n\n"
@@ -550,6 +639,7 @@ HELP_TEXT = (
     "Десятичный разделитель — точка или запятая.\n\n"
     "<b>План:</b> <code>/plan</code> — последние успешные расчёты этого чата; "
     "<code>/forecast [скважина]</code> — честный прогноз для последнего расчёта или указанного имени; "
+    "<code>/economics</code> — экономика риска с явными probability/horizon/efficiency/price/cost/currency; "
     "<code>/plan_clear</code> — очистить локальную историю. История ограничена и исчезает при перезапуске."
 )
 EXAMPLE_TEXT = (
@@ -660,6 +750,29 @@ async def cmd_forecast(message: Message) -> None:
         await message.answer(html.escape(str(exc)), reply_markup=MAIN_MENU)
         return
     for chunk in format_forecast_messages(item):
+        await message.answer(chunk, disable_web_page_preview=True, reply_markup=MAIN_MENU)
+
+
+@dp.message(Command("economics"))
+async def cmd_economics(message: Message) -> None:
+    args = (message.text or "").split()[1:]
+    values, errors = parse_economics_args(args)
+    if errors:
+        example = ("/economics probability=1 horizon=31 efficiency=1 event_days=0 "
+                   "treatment_days=0 price=1000 operating=0 cost=8000 currency=BYN")
+        await message.answer("Параметры экономики не приняты:\n· " + "\n· ".join(errors) +
+                             "\n\nПример:\n<code>" + example + "</code>", reply_markup=MAIN_MENU)
+        return
+    chat_id = message.chat.id if message.chat else 0
+    try:
+        item = select_forecast_diagnosis(
+            RECENT_DIAGNOSES.get(chat_id), str(values.get("well", "")),
+        )
+        chunks = format_economics_messages(item, values)
+    except (LookupError, ValueError) as exc:
+        await message.answer(html.escape(str(exc)), reply_markup=MAIN_MENU)
+        return
+    for chunk in chunks:
         await message.answer(chunk, disable_web_page_preview=True, reply_markup=MAIN_MENU)
 
 

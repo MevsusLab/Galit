@@ -313,6 +313,7 @@ def test_apptest_upload_renders_master_plan_as_first_tab():
         "\u0420\u0430\u043d\u0436\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0444\u043e\u043d\u0434\u0430",
         "\u041f\u0440\u043e\u0444\u0438\u043b\u0438 T(z) \u00b7 P(z)",
         "\u0414\u0435\u0442\u0430\u043b\u044c\u043d\u043e \u043f\u043e \u0441\u043a\u0432\u0430\u0436\u0438\u043d\u0435",
+        "Экономика риска",
         "Прогноз во времени",
         "\u0421\u0440\u0430\u0432\u043d\u0435\u043d\u0438\u0435 \u0441 baseline / \u041f\u0438\u043b\u043e\u0442",
     ]
@@ -399,10 +400,11 @@ def test_forecast_history_parser_requires_timezone_and_preserves_undated():
     assert len(dashboard.fig_forecast_timeline(forecast).data) == 0
 
 
-def test_apptest_demo_has_six_tabs_including_forecast():
+def test_apptest_demo_has_economics_and_forecast_tabs():
     app = AppTest.from_file(str(Path(dashboard.__file__)), default_timeout=120).run()
     button = next(item for item in app.button if item.label == "Демо-фонд (40 скважин)")
     button.click().run()
     assert not app.exception
     labels = [tab.label for tab in app.tabs]
-    assert len(labels) == 6 and "Прогноз во времени" in labels
+    assert len(labels) == 7
+    assert "Экономика риска" in labels and "Прогноз во времени" in labels

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1354,6 +1355,39 @@ def forecast_event_frame(events: list[galit.ForecastEvent] | tuple[galit.Forecas
     return pd.DataFrame(rows)
 
 
+def parse_optional_nonnegative(raw: str, label: str) -> float | None:
+    """Parse an optional dashboard economic input without inventing a default."""
+    text = raw.strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise ValueError(f"{label}: требуется число") from exc
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{label}: требуется конечное неотрицательное число")
+    return value
+
+
+def risk_economics_for_dashboard(case: WellCase, *, probability: float | None,
+                                 horizon_days: float, efficiency: float,
+                                 event_downtime_days: float, treatment_downtime_days: float,
+                                 price: float | None, operating_loss: float | None,
+                                 treatment_cost: float | None, currency: str | None,
+                                 loss_fraction: float = 1.0) -> galit.RiskEconomicsResult:
+    """Pure adapter shared by Streamlit rendering and tests."""
+    return galit.calculate_risk_economics(galit.RiskEconomicsInput(
+        event_probability=probability, horizon_days=horizon_days,
+        treatment_efficiency=efficiency, event_downtime_days=event_downtime_days,
+        treatment_downtime_days=treatment_downtime_days,
+        oil_rate_m3_day=case.rate.q_oil_m3d, product_price_per_m3=price,
+        operating_loss_per_day=operating_loss, treatment_cost=treatment_cost,
+        currency=currency.strip().upper() if currency and currency.strip() else None,
+        production_loss_fraction=loss_fraction,
+        probability_source="dashboard_explicit_input",
+    ))
+
+
 def fig_fund_risk(results: list[DiagnosisResult]) -> go.Figure:
     """Compact overview chart built only from the current diagnosis results."""
     ordered = sorted(results, key=lambda item: item.integrated_risk, reverse=True)[:12]
@@ -1785,9 +1819,10 @@ def main() -> None:
             st.caption(f"Ещё сигналов: {len(alerts) - 6}. Полный список — в ранжировании.")
 
     st.divider()
-    tab_plan, tab_rank, tab_profiles, tab_well, tab_forecast, tab_pilot = st.tabs(
+    tab_plan, tab_rank, tab_profiles, tab_well, tab_economics, tab_forecast, tab_pilot = st.tabs(
         ["План мастера", "Ранжирование фонда", "Профили T(z) · P(z)",
-         "Детально по скважине", "Прогноз во времени", "Сравнение с baseline / Пилот"]
+         "Детально по скважине", "Экономика риска", "Прогноз во времени",
+         "Сравнение с baseline / Пилот"]
     )
 
     # --- первая вкладка: тот же уже сформированный доменный план ---
@@ -1952,6 +1987,73 @@ def main() -> None:
             with st.expander("Оригинальные технические warnings"):
                 for warning in detail.warnings:
                     st.code(warning, language=None)
+
+    # --- экономика риска: только явные денежные входы ---
+    with tab_economics:
+        st.markdown("### Экономика риска по скважине")
+        st.caption("Пустые денежные поля не заменяются примерными ставками: результат будет partial/unavailable.")
+        econ_well = st.selectbox("Скважина для экономики", list(cases_by_name), key="economics_well")
+        econ_case = cases_by_name[econ_well]
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            probability = st.number_input("Вероятность события", 0.0, 1.0, 0.0, 0.01,
+                                          key="economics_probability")
+            horizon = st.number_input("Горизонт, сут.", 1.0, 3650.0, 30.0,
+                                      key="economics_horizon")
+            efficiency = st.number_input("Эффективность обработки", 0.0, 1.0, 0.7, 0.05,
+                                         key="economics_efficiency")
+        with c2:
+            event_days = st.number_input("Простой при событии, сут.", 0.0, value=0.0,
+                                         key="economics_event_days")
+            treatment_days = st.number_input("Простой на обработку, сут.", 0.0, value=0.0,
+                                             key="economics_treatment_days")
+            loss_fraction = st.number_input("Доля потери дебита", 0.0, 1.0, 1.0, 0.05,
+                                            key="economics_loss_fraction")
+        with c3:
+            currency = st.text_input("Валюта", value="", placeholder="например, BYN",
+                                     key="economics_currency")
+            price_raw = st.text_input("Цена продукции за м³", value="", key="economics_price")
+            operating_raw = st.text_input("Операционные потери в сутки", value="",
+                                          key="economics_operating")
+            treatment_raw = st.text_input("Стоимость обработки", value="",
+                                          key="economics_treatment_cost")
+        try:
+            economics = risk_economics_for_dashboard(
+                econ_case, probability=float(probability), horizon_days=float(horizon),
+                efficiency=float(efficiency), event_downtime_days=float(event_days),
+                treatment_downtime_days=float(treatment_days),
+                price=parse_optional_nonnegative(price_raw, "Цена продукции"),
+                operating_loss=parse_optional_nonnegative(operating_raw, "Операционные потери"),
+                treatment_cost=parse_optional_nonnegative(treatment_raw, "Стоимость обработки"),
+                currency=currency, loss_fraction=float(loss_fraction),
+            )
+            b = economics.breakdown
+            unit = economics.currency or "валюта не задана"
+            if economics.status is galit.RiskEconomicsStatus.AVAILABLE:
+                st.success(f"Статус: available · единая валюта {unit}")
+            else:
+                st.warning("Статус: " + economics.status.value + ". Не хватает: " +
+                           ", ".join(economics.missing_inputs))
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Ожидаемая потеря", "—" if b.expected_production_loss_m3 is None
+                      else f"{b.expected_production_loss_m3:.2f} м³")
+            m2.metric("Ущерб без обработки", "—" if b.expected_damage_without_treatment is None
+                      else f"{b.expected_damage_without_treatment:.2f} {unit}")
+            m3.metric("Предотвращаемый ущерб", "—" if b.potential_avoided_damage is None
+                      else f"{b.potential_avoided_damage:.2f} {unit}")
+            m4.metric("Чистый эффект", "—" if b.net_expected_effect is None
+                      else f"{b.net_expected_effect:.2f} {unit}")
+            st.dataframe(pd.DataFrame([
+                {"Показатель": key, "Значение": value}
+                for key, value in vars(b).items()
+            ]), width="stretch", hide_index=True)
+            with st.expander("Формулы, допущения и ограничения"):
+                for name, formula in economics.formulas.items():
+                    st.markdown(f"- `{name}` = {formula}")
+                st.markdown("**Допущения**\n" + "\n".join(f"- {x}" for x in economics.assumptions))
+                st.markdown("**Ограничения**\n" + "\n".join(f"- {x}" for x in economics.limitations))
+        except ValueError as exc:
+            st.error(f"Экономика риска не рассчитана: {exc}")
 
     # --- прогноз: временной контракт отделён от snapshot-диагностики ---
     with tab_forecast:

@@ -333,6 +333,53 @@ class ForecastResponse(BaseModel):
     advisory_notice: str
 
 
+class RiskEconomicsIn(BaseModel):
+    """Explicit single-currency inputs; no prices are inferred by the server."""
+
+    event_probability: float | None = Field(default=None, ge=0, le=1)
+    horizon_days: float = Field(gt=0, le=3650)
+    treatment_efficiency: float = Field(ge=0, le=1)
+    event_downtime_days: float = Field(ge=0)
+    treatment_downtime_days: float = Field(ge=0)
+    oil_rate_m3_day: float | None = Field(default=None, ge=0)
+    product_price_per_m3: float | None = Field(default=None, ge=0)
+    operating_loss_per_day: float | None = Field(default=None, ge=0)
+    treatment_cost: float | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=1, max_length=12)
+    production_loss_fraction: float = Field(default=1.0, ge=0, le=1)
+    probability_source: str = Field(default="explicit_input", min_length=1)
+
+
+class RiskEconomicsRequest(BaseModel):
+    well: WellCaseIn
+    economics: RiskEconomicsIn
+    use_forecast_probability: bool = False
+    as_of: datetime | None = None
+    history_snapshots: list[ForecastSnapshotIn] = Field(default_factory=list, max_length=10000)
+    dataset_id: str | None = None
+    calibration_evidence: ForecastCalibrationIn | None = None
+
+    @field_validator("as_of")
+    @classmethod
+    def aware_optional_as_of(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("as_of must include a timezone offset")
+        return value
+
+
+class RiskEconomicsResponse(BaseModel):
+    well: str
+    status: str
+    currency: str | None
+    data_sufficient: bool
+    missing_inputs: tuple[str, ...]
+    assumptions: tuple[str, ...]
+    formulas: dict[str, str]
+    breakdown: dict[str, float | None]
+    limitations: tuple[str, ...]
+    forecast_link: dict[str, Any]
+
+
 # --------------------------------------------------------------------------
 # Response assembly
 # --------------------------------------------------------------------------
@@ -575,6 +622,86 @@ async def forecast_endpoint(payload: ForecastRequest) -> ForecastResponse:
         },
         advisory_notice=("Screening windows are scenarios, not guaranteed event dates or failure probabilities. "
                          "Unavailable events intentionally contain no fabricated dates."),
+    )
+
+
+@app.post(
+    "/api/v1/risk-economics", response_model=RiskEconomicsResponse,
+    summary="Calculate auditable risk economics for one well",
+    description=("All monetary inputs are explicit and interpreted in one supplied currency. "
+                 "The endpoint never supplies prices or exchange rates. A validated forecast "
+                 "probability may be used only when explicitly requested and available."),
+)
+async def risk_economics_endpoint(payload: RiskEconomicsRequest) -> RiskEconomicsResponse:
+    case = _to_well_case(payload.well)
+    economics = payload.economics
+    probability = economics.event_probability
+    probability_source = economics.probability_source
+    forecast_link: dict[str, Any] = {"requested": payload.use_forecast_probability,
+                                     "used": False, "reason": "not requested"}
+    if payload.use_forecast_probability:
+        if payload.as_of is None:
+            raise HTTPException(400, detail="as_of is required when use_forecast_probability=true")
+        diagnosis = await run_in_threadpool(
+            diagnose, case, False, None, None, SERVER_RUNTIME_CALIBRATION,
+        )
+        history = galit.ForecastHistory(
+            snapshots=tuple(galit.ForecastSnapshot(**item.model_dump())
+                            for item in payload.history_snapshots),
+            dataset_id=payload.dataset_id,
+        )
+        calibration = (galit.ForecastCalibrationEvidence(
+            **payload.calibration_evidence.model_dump()) if payload.calibration_evidence else None)
+        forecast = await run_in_threadpool(
+            galit.forecast_well, diagnosis, case, history=history, as_of=payload.as_of,
+            calibration=calibration,
+        )
+        candidates = [event for event in forecast.events if event.probability is not None]
+        if candidates:
+            selected = max(candidates, key=lambda event: float(event.probability or 0.0))
+            probability = selected.probability
+            probability_source = f"forecast:{selected.mechanism.value}:{selected.id}"
+            forecast_link = {"requested": True, "used": True, "event_id": selected.id,
+                             "mechanism": selected.mechanism.value,
+                             "probability_horizon_days": selected.probability_horizon_days}
+        else:
+            forecast_link = {"requested": True, "used": False,
+                             "reason": "no calibrated forecast probability available"}
+
+    oil_rate = economics.oil_rate_m3_day
+    if oil_rate is None:
+        oil_rate = case.rate.q_oil_m3d
+    try:
+        result = await run_in_threadpool(
+            galit.calculate_risk_economics,
+            galit.RiskEconomicsInput(
+                event_probability=probability,
+                horizon_days=economics.horizon_days,
+                treatment_efficiency=economics.treatment_efficiency,
+                event_downtime_days=economics.event_downtime_days,
+                treatment_downtime_days=economics.treatment_downtime_days,
+                oil_rate_m3_day=oil_rate,
+                product_price_per_m3=economics.product_price_per_m3,
+                operating_loss_per_day=economics.operating_loss_per_day,
+                treatment_cost=economics.treatment_cost,
+                currency=economics.currency,
+                production_loss_fraction=economics.production_loss_fraction,
+                probability_source=probability_source,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    return RiskEconomicsResponse(
+        well=case.name,
+        status=result.status.value,
+        currency=result.currency,
+        data_sufficient=result.data_sufficient,
+        missing_inputs=result.missing_inputs,
+        assumptions=result.assumptions,
+        formulas=result.formulas,
+        breakdown=asdict(result.breakdown),
+        limitations=result.limitations,
+        forecast_link=forecast_link,
     )
 
 

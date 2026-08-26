@@ -52,6 +52,14 @@ from .master_plan import (
     OilLossEstimate,
     generate_master_plan,
 )
+from .risk_economics import (
+    FORMULAS as RISK_ECONOMICS_FORMULAS,
+    RiskEconomicsBreakdown,
+    RiskEconomicsInput,
+    RiskEconomicsResult,
+    RiskEconomicsStatus,
+    calculate_risk_economics,
+)
 from .scale import WaterAnalysis, halite_saturation_index, stiff_davis_index
 from .wax import WaxProperties, wax_onset_depth
 from .wellbore import (
@@ -93,6 +101,12 @@ __all__ = [
     "MasterPlanSummary",
     "MasterTask",
     "OilLossEstimate",
+    "RISK_ECONOMICS_FORMULAS",
+    "RiskEconomicsBreakdown",
+    "RiskEconomicsInput",
+    "RiskEconomicsResult",
+    "RiskEconomicsStatus",
+    "calculate_risk_economics",
     "MECHANISM_WEIGHTS",
     "RiskPolicy",
     "RuntimeCalibration",
