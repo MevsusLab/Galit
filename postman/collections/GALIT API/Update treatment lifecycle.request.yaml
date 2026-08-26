@@ -1,0 +1,14 @@
+$kind: http-request
+method: PATCH
+url: '{{base_url}}/api/v1/treatments/{{treatment_id}}'
+order: 9000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "revision": 1,
+      "status": "in_progress"
+    }

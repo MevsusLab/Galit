@@ -1,0 +1,7 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/treatments/analytics/summary'
+order: 10000
+queryParams:
+  - key: group_by
+    value: reagent

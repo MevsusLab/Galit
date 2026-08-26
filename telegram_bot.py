@@ -25,8 +25,11 @@ import logging
 import math
 from collections import OrderedDict, deque
 import os
+import shlex
 import sys
 import unicodedata
+from datetime import datetime, timezone
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -155,6 +158,158 @@ class RecentDiagnosisStore:
 
 RECENT_DIAGNOSES = RecentDiagnosisStore()
 TELEGRAM_TEXT_LIMIT = 4096
+TREATMENTS = galit.TreatmentRepository(os.environ.get("GALIT_TREATMENT_STORAGE", "data/treatments.json"))
+
+
+TREATMENT_ALIASES = {
+    "well": "well", "скважина": "well", "event": "complication_type",
+    "complication": "complication_type", "осложнение": "complication_type",
+    "description": "description", "описание": "description",
+    "reagent": "reagent", "реагент": "reagent", "a": "reagent_a", "b": "reagent_b",
+    "dose": "dosage", "доза": "dosage", "unit": "dosage_unit", "ед": "dosage_unit",
+    "cost": "cost", "стоимость": "cost", "currency": "currency", "валюта": "currency",
+    "type": "treatment_type", "обработка": "treatment_type",
+    "expected": "expected_result", "ожидание": "expected_result", "id": "id",
+    "revision": "revision", "ревизия": "revision", "status": "status", "статус": "status",
+    "result": "actual_result", "actual_result": "actual_result", "результат": "actual_result",
+    "metric": "metric", "показатель": "metric", "value": "metric_value",
+    "значение": "metric_value", "success": "success", "успех": "success",
+    "days": "effect_duration_days", "duration": "effect_duration_days", "дни": "effect_duration_days",
+    "recurrence": "recurrence", "повтор": "recurrence", "recurrence_date": "recurrence_date",
+    "дата_повтора": "recurrence_date", "group": "well_group", "well_group": "well_group",
+    "группа": "well_group", "limit": "limit", "лимит": "limit", "min_n": "min_sample_size",
+}
+
+
+def treatment_tokens(text: str) -> tuple[list[str], list[str]]:
+    """Tokenize a command with shell-style quoted key=value values."""
+    try:
+        return shlex.split(text, posix=True)[1:], []
+    except ValueError as exc:
+        return [], ["ошибка кавычек: " + html.escape(str(exc))]
+
+
+def parse_treatment_args(args: list[str], required: set[str]) -> tuple[dict[str, str], list[str]]:
+    """Parse RU/EN key=value arguments; values may contain spaces when quoted."""
+    values: dict[str, str] = {}
+    errors: list[str] = []
+    for token in args:
+        raw_key, separator, raw = token.partition("=")
+        key = TREATMENT_ALIASES.get(raw_key.casefold())
+        if not separator or key is None or not raw.strip():
+            errors.append(f"неверный параметр: {html.escape(token)}")
+        elif key in values:
+            errors.append(f"параметр задан повторно: {html.escape(raw_key)}")
+        else:
+            values[key] = raw.strip()
+    missing = sorted(required - values.keys())
+    if missing:
+        errors.append("не заданы: " + ", ".join(missing))
+    return values, errors
+
+
+def parse_treatment_command(text: str, required: set[str] | None = None) -> tuple[dict[str, str], list[str]]:
+    tokens, errors = treatment_tokens(text)
+    if errors:
+        return {}, errors
+    return parse_treatment_args(tokens, required or set())
+
+
+def parse_bool(value: str, field: str) -> bool:
+    normalized = value.casefold()
+    if normalized in {"1", "true", "yes", "да", "y"}:
+        return True
+    if normalized in {"0", "false", "no", "нет", "n"}:
+        return False
+    raise ValueError(f"{field}: используйте да/нет или true/false")
+
+
+def parse_utc_date(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def resolve_treatment(repo: galit.TreatmentRepository, record_id: str) -> galit.TreatmentRecord:
+    """Allow an unambiguous ID prefix from list output without hiding ambiguity."""
+    try:
+        return repo.get(record_id)
+    except galit.TreatmentNotFoundError:
+        matches = [item for item in repo.list(include_archived=True) if item.id.startswith(record_id)]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise galit.TreatmentConflictError("ID неоднозначен; укажите больше символов")
+        raise
+
+
+def format_treatment_card(item: galit.TreatmentRecord) -> list[str]:
+    e = html.escape
+    metrics = ", ".join(f"{e(k)}={v:g}" for k, v in item.result_metrics.items()) or "—"
+    result = e(item.actual_result) if item.actual_result else "—"
+    recurrence = "—" if item.recurrence is None else ("да" if item.recurrence else "нет")
+    if item.recurrence_date:
+        recurrence += f" ({item.recurrence_date.date().isoformat()})"
+    blocks = [
+        f"<b>Мероприятие {e(item.id[:8])}</b>",
+        f"Скважина: {e(item.well_name)}\nОсложнение: {e(item.complication_type)}\n"
+        f"Группа: {e(item.well_group or '—')}\nСтатус: <b>{item.status.value}</b> · revision={item.revision}",
+        f"Описание: {e(item.description)}\nРеагент: {e(item.reagent_name)}\n"
+        f"Доза: {item.dosage:g} {e(item.dosage_unit)}\nСтоимость: {item.cost:g} {e(item.currency)}",
+        f"Ожидание: {e(item.expected_result or '—')}\nФакт: {result}\nМетрики: {metrics}\n"
+        f"Успех: {'—' if item.success is None else ('да' if item.success else 'нет')}\n"
+        f"Длительность: {'—' if item.effect_duration_days is None else f'{item.effect_duration_days:g} сут'}\n"
+        f"Повтор: {recurrence}",
+    ]
+    return _forecast_chunks(blocks)
+
+
+def format_treatments(records: list[galit.TreatmentRecord]) -> list[str]:
+    if not records:
+        return ["Записей журнала не найдено."]
+    blocks = ["<b>Мероприятия</b>"]
+    for item in records:
+        effect = (f"успех={'да' if item.success else 'нет'}; {item.effect_duration_days:g} сут"
+                  if item.status is galit.TreatmentStatus.ASSESSED else "факт не оценён")
+        blocks.append(f"<code>{html.escape(item.id[:8])}</code> · {html.escape(item.well_name)} · "
+                      f"{html.escape(item.reagent_name)} · {item.status.value} · rev={item.revision}\n{html.escape(effect)}")
+    return _forecast_chunks(blocks)
+
+
+def format_treatment_comparison(result: dict[str, object]) -> list[str]:
+    e = html.escape
+    comp = result["comparability"]
+    a, b = result["reagent_a"], result["reagent_b"]
+    def shown(row: dict[str, object]) -> str:
+        value = row["value"]
+        rendered = "—" if value is None else (f"{value:.0%}" if result["metric"] == "success_rate" else f"{value:g} сут")
+        return f"{e(str(row['name']))}: n={row['n']}, значение={rendered}"
+    uplift = result["relative_uplift"]
+    blocks = [
+        "<b>A/B-сравнение реагентов</b>",
+        f"Когорта: complication={e(str(comp['complication_type']))}; well_group={e(str(comp['well_group']))}",
+        shown(a), shown(b),
+        f"uplift B к A: {'—' if uplift is None else f'{uplift:+.1%}'}\n"
+        f"confidence: {e(str(result['confidence']))}\nstatus: {e(str(result['status']))}",
+    ]
+    if result.get("reason"):
+        blocks.append("Недостаточно данных: " + e(str(result["reason"])))
+    blocks.append(e(str(result["warning"])))
+    return _forecast_chunks(blocks)
+
+
+def format_treatment_stats(records: list[galit.TreatmentRecord]) -> list[str]:
+    summary = galit.treatment_summary(records, "reagent")
+    if summary["status"] == "insufficient_data":
+        return ["insufficient_data: оценённых наблюдений пока нет."]
+    blocks = ["<b>Фактическая эффективность</b>"]
+    for row in summary["groups"]:
+        success = "—" if row["success_rate"] is None else f"{row['success_rate']:.0%}"
+        blocks.append(f"{html.escape(row['group'])}: n={row['assessed_observations']}; "
+                      f"успех={success}; confidence={row['confidence']}")
+    blocks.append(html.escape(summary["observational_warning"]))
+    return _forecast_chunks(blocks)
 
 
 def _normalized_well_name(value: str) -> str:
@@ -179,11 +334,26 @@ def select_forecast_diagnosis(items: list[DiagnosedWell], query: str = "") -> Di
 
 
 def _forecast_chunks(blocks: list[str]) -> list[str]:
+    """Join escaped/self-contained blocks and split oversized blocks at safe boundaries."""
+    limit = TELEGRAM_TEXT_LIMIT - 100
+    normalized: list[str] = []
+    for block in blocks:
+        remaining = block
+        while len(remaining) > limit:
+            cut = remaining.rfind("\n", 0, limit)
+            if cut < limit // 2:
+                cut = remaining.rfind(" ", 0, limit)
+            if cut < limit // 2:
+                cut = limit
+            normalized.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+        if remaining:
+            normalized.append(remaining)
     chunks: list[str] = []
     current = ""
-    for block in blocks:
+    for block in normalized:
         candidate = block if not current else current + "\n\n" + block
-        if len(candidate) > TELEGRAM_TEXT_LIMIT - 100 and current:
+        if len(candidate) > limit and current:
             chunks.append(current)
             current = block
         else:
@@ -829,6 +999,190 @@ async def start_calculation(message: Message, state: FSMContext) -> None:
     await state.set_state(Calculation.collecting)
     await state.update_data(step=0, params={})
     await message.answer(FSM_FIELDS[0][1], reply_markup=CANCEL_MENU)
+
+
+def _treatment_error(exc: Exception) -> str:
+    if isinstance(exc, galit.TreatmentNotFoundError):
+        return "Мероприятие не найдено. Проверьте ID."
+    if isinstance(exc, galit.TreatmentConflictError):
+        return "Конфликт изменения: запись уже обновлена. Откройте /treatment и повторите с актуальной revision."
+    if isinstance(exc, galit.TreatmentStorageError):
+        return "Журнал временно недоступен. Данные не изменены."
+    return "Параметры не приняты: " + str(exc)
+
+
+async def _answer_treatment_error(message: Message, exc: Exception) -> None:
+    await message.answer(html.escape(_treatment_error(exc)))
+
+
+@dp.message(Command("treatment_add"))
+async def cmd_treatment_add(message: Message) -> None:
+    required = {"well", "complication_type", "description", "reagent", "dosage",
+                "dosage_unit", "cost", "currency", "treatment_type"}
+    values, errors = parse_treatment_command(message.text or "", required)
+    if errors:
+        await message.answer("Параметры не приняты:\n· " + "\n· ".join(errors) +
+                             "\nПример: <code>/treatment_add well=\"Скважина 12\" event=АСПО description=\"Промывка НКТ\" reagent=R1 dose=2 unit=l/m3 cost=100 currency=BYN type=промывка group=\"куст 1\"</code>")
+        return
+    try:
+        record = galit.new_treatment(
+            well_id=values["well"], well_name=values["well"], event_at=datetime.now(timezone.utc),
+            complication_type=values["complication_type"], description=values["description"],
+            reagent_name=values["reagent"], reagent_id=None, dosage=float(values["dosage"].replace(",", ".")),
+            dosage_unit=values["dosage_unit"], cost=float(values["cost"].replace(",", ".")),
+            currency=values["currency"], treatment_type=values["treatment_type"],
+            expected_result=values.get("expected_result"), source="telegram", well_group=values.get("well_group"),
+        )
+        saved = await asyncio.to_thread(TREATMENTS.create, record)
+        await message.answer(f"План сохранён: <code>{html.escape(saved.id)}</code> · revision={saved.revision}.\n"
+                             f"Для явного запуска: <code>/treatment_start id={html.escape(saved.id)} revision={saved.revision}</code>")
+    except (ValueError, galit.TreatmentStorageError) as exc:
+        await _answer_treatment_error(message, exc)
+
+
+async def _transition_treatment(message: Message, target: galit.TreatmentStatus) -> None:
+    values, errors = parse_treatment_command(message.text or "", {"id", "revision"})
+    if errors:
+        await message.answer("Параметры не приняты:\n· " + "\n· ".join(errors))
+        return
+    try:
+        revision = int(values["revision"])
+        record = await asyncio.to_thread(resolve_treatment, TREATMENTS, values["id"])
+        if record.revision != revision:
+            raise galit.TreatmentConflictError("stale revision")
+        updated = record.transition(target)
+        saved = await asyncio.to_thread(TREATMENTS.update, updated, expected_revision=revision)
+        await message.answer(f"Статус подтверждён: <b>{saved.status.value}</b> · revision={saved.revision}.")
+    except (ValueError, galit.TreatmentNotFoundError, galit.TreatmentConflictError,
+            galit.TreatmentStorageError) as exc:
+        await _answer_treatment_error(message, exc)
+
+
+@dp.message(Command("treatment_start"))
+async def cmd_treatment_start(message: Message) -> None:
+    await _transition_treatment(message, galit.TreatmentStatus.IN_PROGRESS)
+
+
+@dp.message(Command("treatment_complete"))
+async def cmd_treatment_complete(message: Message) -> None:
+    await _transition_treatment(message, galit.TreatmentStatus.COMPLETED)
+
+
+@dp.message(Command("treatment_result"))
+async def cmd_treatment_result(message: Message) -> None:
+    required = {"id", "revision", "actual_result", "metric", "metric_value", "success",
+                "effect_duration_days", "recurrence"}
+    values, errors = parse_treatment_command(message.text or "", required)
+    if errors:
+        await message.answer("Параметры не приняты:\n· " + "\n· ".join(errors))
+        return
+    try:
+        revision = int(values["revision"])
+        record = await asyncio.to_thread(resolve_treatment, TREATMENTS, values["id"])
+        if record.revision != revision:
+            raise galit.TreatmentConflictError("stale revision")
+        if record.status is not galit.TreatmentStatus.COMPLETED:
+            raise ValueError("сначала явно выполните /treatment_start, затем /treatment_complete")
+        recurrence = parse_bool(values["recurrence"], "recurrence")
+        recurrence_date = parse_utc_date(values["recurrence_date"]) if values.get("recurrence_date") else None
+        if recurrence and recurrence_date is None:
+            raise ValueError("при recurrence=true требуется recurrence_date=YYYY-MM-DD")
+        updated = record.transition(
+            galit.TreatmentStatus.ASSESSED, actual_result=values["actual_result"],
+            result_metrics={values["metric"]: float(values["metric_value"].replace(",", "."))},
+            success=parse_bool(values["success"], "success"),
+            effect_duration_days=float(values["effect_duration_days"].replace(",", ".")),
+            recurrence=recurrence, recurrence_date=recurrence_date,
+        )
+        saved = await asyncio.to_thread(TREATMENTS.update, updated, expected_revision=revision)
+        await message.answer(f"Фактический результат зафиксирован: <b>assessed</b> · revision={saved.revision}.")
+    except (ValueError, galit.TreatmentNotFoundError, galit.TreatmentConflictError,
+            galit.TreatmentStorageError) as exc:
+        await _answer_treatment_error(message, exc)
+
+
+@dp.message(Command("treatment"))
+async def cmd_treatment(message: Message) -> None:
+    values, errors = parse_treatment_command(message.text or "", {"id"})
+    if errors:
+        await message.answer("Укажите <code>/treatment id=...</code>")
+        return
+    try:
+        record = await asyncio.to_thread(resolve_treatment, TREATMENTS, values["id"])
+        for chunk in format_treatment_card(record):
+            await message.answer(chunk)
+    except (galit.TreatmentNotFoundError, galit.TreatmentConflictError, galit.TreatmentStorageError) as exc:
+        await _answer_treatment_error(message, exc)
+
+
+@dp.message(Command("treatments"))
+async def cmd_treatments(message: Message) -> None:
+    values, errors = parse_treatment_command(message.text or "")
+    allowed = {"well", "status", "complication_type", "reagent", "currency", "well_group", "limit"}
+    unknown = sorted(set(values) - allowed)
+    if unknown:
+        errors.append("фильтр не поддерживается: " + ", ".join(unknown))
+    if errors:
+        await message.answer("Параметры не приняты:\n· " + "\n· ".join(errors))
+        return
+    try:
+        limit = int(values.get("limit", "10"))
+        records = await asyncio.to_thread(
+            TREATMENTS.list, well=values.get("well"),
+            status=galit.TreatmentStatus(values["status"]) if values.get("status") else None,
+            complication_type=values.get("complication_type"), reagent=values.get("reagent"),
+            currency=values.get("currency"), well_group=values.get("well_group"), limit=min(limit, 50),
+        )
+        for chunk in format_treatments(records):
+            await message.answer(chunk)
+    except (ValueError, galit.TreatmentStorageError) as exc:
+        await _answer_treatment_error(message, exc)
+
+
+@dp.message(Command("treatment_compare"))
+async def cmd_treatment_compare(message: Message) -> None:
+    required = {"reagent_a", "reagent_b", "complication_type", "well_group"}
+    values, errors = parse_treatment_command(message.text or "", required)
+    if errors:
+        await message.answer("Пример: <code>/treatment_compare a=R1 b=R2 event=АСПО group=\"куст 1\" metric=success_rate</code>\n· " + "\n· ".join(errors))
+        return
+    try:
+        records = await asyncio.to_thread(TREATMENTS.list)
+        result = galit.compare_reagents(
+            records, values["reagent_a"], values["reagent_b"],
+            metric=values.get("metric", "success_rate"),
+            min_sample_size=int(values.get("min_sample_size", galit.DEFAULT_MIN_SAMPLE_SIZE)),
+            complication_type=values["complication_type"], well_group=values["well_group"],
+        )
+        for chunk in format_treatment_comparison(result):
+            await message.answer(chunk)
+    except (ValueError, galit.TreatmentStorageError) as exc:
+        await _answer_treatment_error(message, exc)
+
+
+@dp.message(Command("treatment_cancel"))
+async def cmd_treatment_cancel(message: Message) -> None:
+    values, errors = parse_treatment_command(message.text or "", {"id", "revision"})
+    if errors:
+        await message.answer("Укажите <code>/treatment_cancel id=... revision=...</code>")
+        return
+    try:
+        record = await asyncio.to_thread(resolve_treatment, TREATMENTS, values["id"])
+        saved = await asyncio.to_thread(TREATMENTS.archive, record.id, expected_revision=int(values["revision"]))
+        await message.answer(f"Мероприятие отменено и архивировано · revision={saved.revision}.")
+    except (ValueError, galit.TreatmentNotFoundError, galit.TreatmentConflictError,
+            galit.TreatmentStorageError) as exc:
+        await _answer_treatment_error(message, exc)
+
+
+@dp.message(Command("treatment_stats"))
+async def cmd_treatment_stats(message: Message) -> None:
+    try:
+        records = await asyncio.to_thread(TREATMENTS.list)
+        for chunk in format_treatment_stats(records):
+            await message.answer(chunk)
+    except galit.TreatmentStorageError as exc:
+        await message.answer(html.escape(str(exc)))
 
 
 @dp.message(Command("plan"))

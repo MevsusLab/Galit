@@ -1,0 +1,15 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/treatments/analytics/compare'
+order: 11000
+queryParams:
+  - key: reagent_a
+    value: Reagent A
+  - key: reagent_b
+    value: Reagent B
+  - key: complication_type
+    value: halite
+  - key: well_group
+    value: late-stage
+  - key: min_sample_size
+    value: '5'

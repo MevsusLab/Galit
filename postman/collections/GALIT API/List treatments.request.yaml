@@ -1,0 +1,9 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/treatments'
+order: 8000
+queryParams:
+  - key: limit
+    value: '100'
+  - key: offset
+    value: '0'

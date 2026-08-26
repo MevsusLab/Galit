@@ -1,0 +1,7 @@
+$kind: http-request
+method: DELETE
+url: '{{base_url}}/api/v1/treatments/{{treatment_id}}'
+order: 12000
+queryParams:
+  - key: revision
+    value: '1'

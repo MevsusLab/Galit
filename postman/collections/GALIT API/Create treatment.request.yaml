@@ -1,0 +1,24 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/treatments'
+order: 7000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "well_id": "well-123",
+      "well_name": "Речицкая 123",
+      "event_at": "2026-08-23T12:00:00+00:00",
+      "complication_type": "halite",
+      "description": "Рост давления и снижение дебита",
+      "reagent_name": "Reagent A",
+      "dosage": 25,
+      "dosage_unit": "mg/l",
+      "cost": 1200,
+      "currency": "BYN",
+      "treatment_type": "inhibitor",
+      "well_group": "late-stage"
+    }

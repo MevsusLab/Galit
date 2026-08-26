@@ -282,3 +282,64 @@ def test_forecast_text_has_no_fake_date_or_probability_and_is_chunked():
     assert "вероятность" not in text.lower()
     assert "не заменяет промысловые исследования" in text
     assert "/forecast" in tb.START_TEXT and "/forecast" in tb.HELP_TEXT
+
+
+# ------------------------------------------------------- treatment journal
+
+def _treatment(**overrides):
+    now = tb.datetime(2026, 8, 23, 12, tzinfo=tb.timezone.utc)
+    values = dict(
+        well_id="w-1", well_name="Скважина <12>", event_at=now,
+        complication_type="АСПО", description="Промывка <НКТ>",
+        reagent_name="R&1", reagent_id=None, dosage=2, dosage_unit="l/m3",
+        cost=100, currency="BYN", treatment_type="промывка", well_group="куст 1",
+    )
+    values.update(overrides)
+    return galit.new_treatment(now=now, **values)
+
+
+def test_treatment_parser_supports_quotes_spaces_and_ru_en_aliases():
+    values, errors = tb.parse_treatment_command(
+        '/treatment_add скважина="Скважина 12" event=АСПО описание="Промывка НКТ" '
+        'reagent="Реагент A" dose=2 unit=l/m3 cost=100 currency=BYN type=промывка'
+    )
+    assert errors == []
+    assert values["well"] == "Скважина 12"
+    assert values["description"] == "Промывка НКТ"
+    assert values["reagent"] == "Реагент A"
+
+
+def test_treatment_card_escapes_html_and_long_chunks_are_bounded():
+    text = "\n".join(tb.format_treatment_card(_treatment()))
+    assert "Скважина <12>" not in text and "Скважина &lt;12&gt;" in text
+    assert "R&1" not in text and "R&amp;1" in text
+    chunks = tb._forecast_chunks(["x " * 5000])
+    assert len(chunks) > 1 and all(len(chunk) <= tb.TELEGRAM_TEXT_LIMIT for chunk in chunks)
+
+
+def test_treatment_lifecycle_requires_each_explicit_transition_and_revision(tmp_path):
+    repo = galit.TreatmentRepository(tmp_path / "journal.json")
+    planned = repo.create(_treatment())
+    with pytest.raises(ValueError, match="invalid treatment transition"):
+        planned.transition(galit.TreatmentStatus.COMPLETED)
+    started = repo.update(planned.transition(galit.TreatmentStatus.IN_PROGRESS), expected_revision=1)
+    with pytest.raises(galit.TreatmentConflictError):
+        repo.update(started.transition(galit.TreatmentStatus.COMPLETED), expected_revision=1)
+    completed = repo.update(started.transition(galit.TreatmentStatus.COMPLETED), expected_revision=2)
+    assessed = completed.transition(
+        galit.TreatmentStatus.ASSESSED, actual_result="Эффект есть",
+        result_metrics={"дебит": 2.5}, success=True, effect_duration_days=30,
+        recurrence=False,
+    )
+    assert repo.update(assessed, expected_revision=3).status is galit.TreatmentStatus.ASSESSED
+
+
+def test_treatment_comparison_formatter_shows_cohort_n_insufficient_and_warning():
+    result = galit.compare_reagents(
+        [], "A", "B", complication_type="АСПО", well_group="куст <1>", min_sample_size=2,
+    )
+    text = "\n".join(tb.format_treatment_comparison(result))
+    assert "complication=АСПО" in text and "well_group=куст &lt;1&gt;" in text
+    assert "A: n=0" in text and "B: n=0" in text
+    assert "Недостаточно данных" in text and "confidence: low" in text
+    assert "не доказывает причинность" in text

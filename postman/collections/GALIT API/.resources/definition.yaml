@@ -5,4 +5,7 @@ variables:
     value: 'http://127.0.0.1:8000'
   - key: baseUrl
     value: 'http://127.0.0.1:8000'
+  - key: treatment_id
+    value: ''
+    description: 'ID мероприятия из ответа Create treatment'
 description: 'Local integration-prototype checks. No secrets or authentication claims.'

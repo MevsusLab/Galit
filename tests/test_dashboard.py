@@ -317,6 +317,7 @@ def test_apptest_upload_renders_master_plan_as_first_tab():
         "Экономика риска",
         "Прогноз во времени",
         "\u0421\u0440\u0430\u0432\u043d\u0435\u043d\u0438\u0435 \u0441 baseline / \u041f\u0438\u043b\u043e\u0442",
+        "Журнал мероприятий",
     ]
     assert next(metric.value for metric in app.metric if metric.label == "\u0412\u0441\u0435\u0433\u043e \u0437\u0430\u0434\u0430\u0447") == "1"
     assert any(button.label == "\u0421\u043a\u0430\u0447\u0430\u0442\u044c \u043f\u043b\u0430\u043d CSV" for button in app.get("download_button"))
@@ -407,6 +408,86 @@ def test_apptest_demo_has_economics_and_forecast_tabs():
     button.click().run()
     assert not app.exception
     labels = [tab.label for tab in app.tabs]
-    assert len(labels) == 8
+    assert len(labels) == 9
     assert "Что будет, если?" in labels
     assert "Экономика риска" in labels and "Прогноз во времени" in labels
+    assert labels[-1] == "Журнал мероприятий"
+
+
+# ------------------------------------------------ treatment journal UI
+
+def test_treatment_helpers_autofill_and_currency_rows():
+    case = dashboard.galit.synthetic.make_fund(1, seed=31)[0]
+    result = diagnose(case)
+    context = dashboard.treatment_well_context({case.name: case}, [result])[case.name]
+    assert context["baseline_risk"] == result.integrated_risk
+    assert context["complication_type"] == result.dominant
+    assert context["well_group"] == case.lift_type
+
+    now = dashboard.datetime(2026, 8, 23, 12, tzinfo=dashboard.timezone.utc)
+    records = []
+    for currency in ("BYN", "USD"):
+        item = dashboard.galit.new_treatment(
+            now=now, well_id="w-1", well_name="Well 1", event_at=now,
+            complication_type="halite", description="Event", reagent_name="A",
+            reagent_id=None, dosage=1, dosage_unit="mg/l", cost=10,
+            currency=currency, treatment_type="inhibitor", well_group="ESP",
+        )
+        item = item.transition(dashboard.galit.TreatmentStatus.IN_PROGRESS, now=now)
+        item = item.transition(dashboard.galit.TreatmentStatus.COMPLETED, now=now)
+        records.append(item.transition(
+            dashboard.galit.TreatmentStatus.ASSESSED, now=now,
+            actual_result="Restored", result_metrics={"gain": 1}, success=True,
+            effect_duration_days=10, recurrence=False,
+        ))
+    frame = dashboard.treatment_summary_frame(dashboard.galit.treatment_summary(records))
+    assert set(frame["Валюта"]) == {"BYN", "USD"}
+    assert frame["Оценено, n"].eq(2).all()
+
+
+def test_apptest_journal_uses_temp_storage_and_reaches_assessed(tmp_path, monkeypatch):
+    storage = tmp_path / "journal.json"
+    monkeypatch.setenv("GALIT_TREATMENT_STORAGE", str(storage))
+    app = AppTest.from_file(str(Path(dashboard.__file__)), default_timeout=120).run()
+    app.get("file_uploader")[0].set_value(
+        ("valid-fund.csv", MINIMAL_CSV, "text/csv")
+    ).run()
+    assert not app.exception
+    assert [tab.label for tab in app.tabs].count("Журнал мероприятий") == 1
+
+    next(item for item in app.text_area if item.label == "Описание события").set_value("Рост давления")
+    next(item for item in app.text_input if item.label == "Реагент (название)").set_value("A")
+    next(item for item in app.text_input if item.label == "Тип обработки").set_value("Ингибитор")
+    next(item for item in app.button if item.label == "Сохранить план").click().run()
+    assert not app.exception
+    repository = dashboard.galit.TreatmentRepository(storage)
+    record = repository.list()[0]
+    assert record.well_name == "139" and record.baseline_risk is not None
+
+    next(item for item in app.radio if item.label == "Раздел журнала").set_value(
+        "Lifecycle и результат"
+    ).run()
+    next(item for item in app.button if item.label == "Начать мероприятие").click().run()
+    assert repository.list()[0].status is dashboard.galit.TreatmentStatus.IN_PROGRESS
+    next(item for item in app.button if item.label == "Завершить мероприятие").click().run()
+    assert repository.list()[0].status is dashboard.galit.TreatmentStatus.COMPLETED
+
+    next(item for item in app.text_area if item.label == "Фактический результат").set_value("Дебит восстановлен")
+    next(item for item in app.number_input if item.label == "Значение показателя").set_value(2.0)
+    next(item for item in app.number_input if item.label == "Длительность эффекта, сут").set_value(30.0)
+    next(item for item in app.button if item.label == "Зафиксировать assessed").click().run()
+    assessed = repository.list()[0]
+    assert assessed.status is dashboard.galit.TreatmentStatus.ASSESSED
+    assert assessed.revision == 4 and assessed.actual_result == "Дебит восстановлен"
+
+
+def test_apptest_corrupt_treatment_storage_does_not_crash(tmp_path, monkeypatch):
+    storage = tmp_path / "broken.json"
+    storage.write_text("{broken", encoding="utf-8")
+    monkeypatch.setenv("GALIT_TREATMENT_STORAGE", str(storage))
+    app = AppTest.from_file(str(Path(dashboard.__file__)), default_timeout=120).run()
+    app.get("file_uploader")[0].set_value(
+        ("valid-fund.csv", MINIMAL_CSV, "text/csv")
+    ).run()
+    assert not app.exception
+    assert any("повреждено" in item.value for item in app.error)

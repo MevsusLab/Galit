@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import io
 import math
+import os
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1695,6 +1696,303 @@ def unique_labels(results: list[DiagnosisResult]) -> list[str]:
     return [label for label, _ in result_labels(results)]
 
 
+def treatment_storage_path() -> Path:
+    """Resolve the configured journal path relative to the project, not process CWD."""
+    configured = Path(os.environ.get("GALIT_TREATMENT_STORAGE", "data/treatments.json"))
+    return configured if configured.is_absolute() else PROJECT_ROOT / configured
+
+
+def get_treatment_repository() -> galit.TreatmentRepository:
+    """Return one repository per configured path for the current Streamlit session."""
+    path = str(treatment_storage_path().resolve())
+    cached = st.session_state.get("treatment_repository")
+    if cached is None or str(cached.path.resolve()) != path:
+        cached = galit.TreatmentRepository(path)
+        st.session_state["treatment_repository"] = cached
+    return cached
+
+
+def ensure_utc(value: datetime) -> datetime:
+    """Normalize Streamlit datetime values to the repository's aware UTC contract."""
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def treatment_well_context(cases_by_name: dict[str, WellCase],
+                           results: list[DiagnosisResult]) -> dict[str, dict[str, Any]]:
+    """Build safe autofill context from the current calculated fund."""
+    diagnosed = {item.well: item for item in results}
+    context: dict[str, dict[str, Any]] = {}
+    for name, case in cases_by_name.items():
+        result = diagnosed.get(name)
+        context[name] = {
+            "well_id": name,
+            "well_name": name,
+            "baseline_risk": result.integrated_risk if result else None,
+            "baseline_state": result.dominant if result else None,
+            "complication_type": result.dominant if result else "other",
+            "well_group": case.lift_type or None,
+        }
+    return context
+
+
+def treatment_history_frame(records: list[galit.TreatmentRecord],
+                            currency: str | None = None) -> pd.DataFrame:
+    """Build an audit-friendly history table without mixing currencies."""
+    rows = []
+    for item in records:
+        if currency and item.currency != currency:
+            continue
+        rows.append({
+            "ID": item.id, "Скважина": item.well_name, "Дата": item.event_at,
+            "Осложнение": item.complication_type, "Группа": item.well_group,
+            "Реагент": item.reagent_name, "Дозировка": f"{item.dosage:g} {item.dosage_unit}",
+            "Стоимость": item.cost, "Валюта": item.currency,
+            "Мероприятие": item.treatment_type, "Статус": item.status.value,
+            "Успех": item.success, "Эффект, сут": item.effect_duration_days,
+            "Повтор": item.recurrence, "Дата повтора": item.recurrence_date,
+            "Архив": item.archived, "Ревизия": item.revision,
+            "Источник": item.source, "Обновлено": item.updated_at,
+        })
+    return pd.DataFrame(rows)
+
+
+def treatment_summary_frame(summary: dict[str, Any]) -> pd.DataFrame:
+    """Flatten assessed-only summary and keep every currency in a separate row."""
+    rows: list[dict[str, Any]] = []
+    for group in summary.get("groups", []):
+        costs = group.get("costs_by_currency", {})
+        currencies = costs or {"—": {"total": None, "per_success": None,
+                                     "per_effect_day": None}}
+        for currency, values in currencies.items():
+            rows.append({
+                "Реагент": group["group"], "Всего записей": group["treatments"],
+                "Оценено, n": group["assessed_observations"],
+                "Успех": group["success_rate"], "Средний эффект, сут": group["effect_days_mean"],
+                "Повтор": group["recurrence_rate"], "Confidence": group["confidence"],
+                "Валюта": currency, "Затраты": values["total"],
+                "Затраты / успех": values["per_success"],
+                "Затраты / день эффекта": values["per_effect_day"],
+            })
+    return pd.DataFrame(rows)
+
+
+def _journal_error(exc: Exception) -> None:
+    if isinstance(exc, galit.TreatmentConflictError):
+        st.error("Конфликт ревизии: запись уже изменилась. Обновите экран и повторите действие.")
+    elif isinstance(exc, galit.TreatmentNotFoundError):
+        st.error("Запись больше не найдена. Обновите экран.")
+    elif isinstance(exc, galit.TreatmentStorageError):
+        st.error(f"Хранилище журнала повреждено или недоступно: {exc}")
+    else:
+        st.error(f"Не удалось сохранить запись: {exc}")
+
+
+def render_treatment_journal(repository: galit.TreatmentRepository,
+                             well_context: dict[str, dict[str, Any]]) -> None:
+    """Create, progress, assess, archive, filter and aggregate journal records."""
+    st.subheader("Журнал мероприятий и фактического эффекта")
+    st.caption("План и факт разделены. В KPI и A/B входят только assessed-записи.")
+    try:
+        records = repository.list(include_archived=True)
+    except galit.TreatmentStorageError as exc:
+        _journal_error(exc)
+        st.info("Исправьте или удалите повреждённый JSON-файл хранилища, затем обновите экран.")
+        return
+
+    section = st.radio(
+        "Раздел журнала", ["Новое мероприятие", "Lifecycle и результат", "История", "Сводка и A/B"],
+        horizontal=True, key="treatment_section",
+    )
+    active_records = [item for item in records if not item.archived]
+
+    if section == "Новое мероприятие":
+        known = sorted(well_context)
+        mode = st.radio("Скважина", ["Из рассчитанного фонда", "Указать вручную"],
+                        horizontal=True, disabled=not known, key="treatment_well_mode")
+        selected = st.selectbox("Существующая скважина", known, key="treatment_known_well") if known and mode == "Из рассчитанного фонда" else None
+        defaults = well_context.get(selected or "", {})
+        if defaults:
+            st.caption("Контекст подставлен из текущего расчёта: риск, механизм и группа эксплуатации.")
+        with st.form("treatment-create", clear_on_submit=True):
+            well_name = selected or st.text_input("Название скважины")
+            well_id = st.text_input("ID скважины", value=str(defaults.get("well_id", well_name)))
+            event_at = st.datetime_input("Дата и время события", value=datetime.now(timezone.utc))
+            complication_values = ["wax", "halite", "calcite", "corrosion", "other"]
+            default_complication = defaults.get("complication_type", "other")
+            complication = st.selectbox("Осложнение", complication_values,
+                                        index=complication_values.index(default_complication))
+            description = st.text_area("Описание события")
+            reagent_col, id_col = st.columns(2)
+            reagent = reagent_col.text_input("Реагент (название)")
+            reagent_id = id_col.text_input("ID реагента (необязательно)")
+            dosage_col, cost_col = st.columns(2)
+            dosage = dosage_col.number_input("Дозировка", min_value=0.0)
+            dosage_unit = dosage_col.selectbox("Единица", sorted(galit.treatments.VALID_DOSAGE_UNITS))
+            cost = cost_col.number_input("Стоимость", min_value=0.0)
+            currency = cost_col.selectbox("Валюта", sorted(galit.treatments.VALID_CURRENCIES))
+            treatment_type = st.text_input("Тип обработки")
+            expected = st.text_area("Ожидаемый результат (не факт)")
+            baseline_risk = st.number_input("Исходный риск", 0.0, 1.0,
+                                            value=float(defaults.get("baseline_risk") or 0.0))
+            baseline_state = st.text_input("Исходное состояние",
+                                           value=str(defaults.get("baseline_state") or ""))
+            well_group = st.text_input("Группа скважин",
+                                       value=str(defaults.get("well_group") or ""))
+            source = st.text_input("Источник", value="dashboard")
+            comment = st.text_area("Комментарий")
+            submitted = st.form_submit_button("Сохранить план")
+        if submitted:
+            try:
+                created = galit.new_treatment(
+                    well_id=well_id, well_name=well_name, event_at=ensure_utc(event_at),
+                    complication_type=complication, description=description,
+                    reagent_name=reagent, reagent_id=reagent_id or None, dosage=dosage,
+                    dosage_unit=dosage_unit, cost=cost, currency=currency,
+                    treatment_type=treatment_type, baseline_risk=baseline_risk,
+                    baseline_state=baseline_state or None, expected_result=expected or None,
+                    source=source, well_group=well_group or None, comment=comment or None,
+                )
+                repository.create(created)
+                st.success(f"Запись создана · revision {created.revision}")
+            except (ValueError, galit.TreatmentStorageError, galit.TreatmentConflictError) as exc:
+                _journal_error(exc)
+
+    elif section == "Lifecycle и результат":
+        candidates = [item for item in active_records if item.status is not galit.TreatmentStatus.ASSESSED]
+        if not candidates:
+            st.info("Нет незавершённых записей.")
+        else:
+            selected_id = st.selectbox(
+                "Запись", [item.id for item in candidates],
+                format_func=lambda value: next(
+                    f"{item.well_name} · {item.reagent_name} · {item.status.value} · r{item.revision}"
+                    for item in candidates if item.id == value), key="treatment_lifecycle_record",
+            )
+            item = next(row for row in candidates if row.id == selected_id)
+            st.json({"revision": item.revision, "expected_result": item.expected_result,
+                     "baseline_risk": item.baseline_risk, "baseline_state": item.baseline_state,
+                     "updated_at": item.updated_at.isoformat()}, expanded=False)
+            next_status = next(iter(galit.treatments.ALLOWED_TRANSITIONS[item.status]), None)
+            if next_status in {galit.TreatmentStatus.IN_PROGRESS, galit.TreatmentStatus.COMPLETED}:
+                label = "Начать" if next_status is galit.TreatmentStatus.IN_PROGRESS else "Завершить"
+                if st.button(f"{label} мероприятие", key="treatment_progress"):
+                    try:
+                        repository.update(item.transition(next_status), expected_revision=item.revision)
+                        st.success(f"Статус изменён на {next_status.value}.")
+                        st.rerun()
+                    except (ValueError, galit.TreatmentStorageError, galit.TreatmentConflictError,
+                            galit.TreatmentNotFoundError) as exc:
+                        _journal_error(exc)
+            elif next_status is galit.TreatmentStatus.ASSESSED:
+                with st.form("treatment-assess"):
+                    actual = st.text_area("Фактический результат")
+                    metric_name = st.text_input("Измеримый показатель", value="oil_rate_delta_m3_day")
+                    metric_value = st.number_input("Значение показателя", min_value=0.0)
+                    success_choice = st.selectbox("Успех", ["да", "нет"])
+                    days = st.number_input("Длительность эффекта, сут", min_value=0.0)
+                    recurrence_choice = st.selectbox("Повтор осложнения", ["нет", "да"])
+                    recurrence_date = st.datetime_input("Дата повтора", value=datetime.now(timezone.utc),
+                                                        disabled=recurrence_choice == "нет")
+                    comment = st.text_area("Комментарий", value=item.comment or "")
+                    assess = st.form_submit_button("Зафиксировать assessed")
+                if assess:
+                    try:
+                        recurrence = recurrence_choice == "да"
+                        updated = item.transition(
+                            galit.TreatmentStatus.ASSESSED, actual_result=actual,
+                            result_metrics={metric_name: metric_value}, success=success_choice == "да",
+                            effect_duration_days=days, recurrence=recurrence,
+                            recurrence_date=ensure_utc(recurrence_date) if recurrence else None,
+                            comment=comment or None,
+                        )
+                        saved = repository.update(updated, expected_revision=item.revision)
+                        st.success(f"Результат сохранён · revision {saved.revision}.")
+                    except (ValueError, galit.TreatmentStorageError, galit.TreatmentConflictError,
+                            galit.TreatmentNotFoundError) as exc:
+                        _journal_error(exc)
+
+    elif section == "История":
+        include_archived = st.checkbox("Показывать архив", key="treatment_include_archived")
+        visible = records if include_archived else active_records
+        wells = sorted({item.well_name for item in visible})
+        statuses = sorted({item.status.value for item in visible})
+        complications = sorted({item.complication_type for item in visible})
+        f1, f2, f3 = st.columns(3)
+        selected_well = f1.selectbox("Скважина", ["Все", *wells], key="treatment_history_well")
+        selected_status = f2.selectbox("Статус", ["Все", *statuses], key="treatment_history_status")
+        selected_complication = f3.selectbox("Осложнение", ["Все", *complications], key="treatment_history_complication")
+        currencies = sorted({item.currency for item in visible})
+        selected_currency = st.selectbox("Валюта", ["Раздельно", *currencies], key="treatment_history_currency")
+        visible = [item for item in visible
+                   if (selected_well == "Все" or item.well_name == selected_well)
+                   and (selected_status == "Все" or item.status.value == selected_status)
+                   and (selected_complication == "Все" or item.complication_type == selected_complication)]
+        st.dataframe(treatment_history_frame(
+            visible, None if selected_currency == "Раздельно" else selected_currency),
+            width="stretch", hide_index=True,
+        )
+        archivable = [item for item in visible if not item.archived]
+        if archivable:
+            archive_id = st.selectbox("Запись для архива", [item.id for item in archivable],
+                                      format_func=lambda value: next(
+                                          f"{item.well_name} · {item.reagent_name} · r{item.revision}"
+                                          for item in archivable if item.id == value))
+            archive_item = next(item for item in archivable if item.id == archive_id)
+            if st.button("Архивировать запись", key="treatment_archive"):
+                try:
+                    repository.archive(archive_id, expected_revision=archive_item.revision)
+                    st.success("Запись перенесена в архив.")
+                    st.rerun()
+                except (galit.TreatmentStorageError, galit.TreatmentConflictError,
+                        galit.TreatmentNotFoundError) as exc:
+                    _journal_error(exc)
+        st.caption("Валюты не конвертируются; ID, revision, источник и timestamps сохранены для аудита.")
+
+    else:
+        assessed = [item for item in active_records if item.status is galit.TreatmentStatus.ASSESSED]
+        summary = galit.treatment_summary(assessed, "reagent")
+        if not assessed:
+            st.info("insufficient_data: нет assessed-наблюдений для KPI.")
+        else:
+            summary_frame = treatment_summary_frame(summary)
+            st.dataframe(summary_frame.style.format({"Успех": "{:.1%}", "Повтор": "{:.1%}"},
+                                                     na_rep="—"), width="stretch", hide_index=True)
+            for currency in sorted({item.currency for item in assessed}):
+                same = [item for item in assessed if item.currency == currency]
+                st.metric(f"Затраты assessed · {currency}", f"{sum(item.cost for item in same):,.2f}",
+                          help=f"n={len(same)}; валюты не суммируются между собой")
+        complications = sorted({item.complication_type for item in assessed})
+        groups = sorted({item.well_group for item in assessed if item.well_group})
+        reagents = sorted({item.reagent_name for item in assessed})
+        if len(reagents) < 2 or not complications or not groups:
+            st.info("Для A/B нужны assessed-записи двух реагентов с одинаковыми complication и well_group.")
+        else:
+            c1, c2 = st.columns(2)
+            reagent_a = c1.selectbox("Реагент A", reagents, index=0)
+            reagent_b = c2.selectbox("Реагент B", reagents, index=1)
+            complication = c1.selectbox("Сопоставимое осложнение", complications)
+            well_group = c2.selectbox("Сопоставимая группа скважин", groups)
+            metric = st.selectbox("Метрика", ["success_rate", "mean_effect_days"])
+            min_n = st.number_input("Минимум наблюдений на реагент", min_value=2,
+                                    value=galit.DEFAULT_MIN_SAMPLE_SIZE)
+            try:
+                comparison = galit.compare_reagents(
+                    assessed, reagent_a, reagent_b, metric=metric, min_sample_size=int(min_n),
+                    complication_type=complication, well_group=well_group,
+                )
+                a, b = comparison["reagent_a"], comparison["reagent_b"]
+                st.write(f"A: n={a['n']}, value={a['value'] if a['value'] is not None else '—'} · "
+                         f"B: n={b['n']}, value={b['value'] if b['value'] is not None else '—'}")
+                if comparison["status"] == "available":
+                    st.metric("Relative uplift B vs A", f"{comparison['relative_uplift']:.1%}")
+                    st.success(f"Confidence: {comparison['confidence']}")
+                else:
+                    st.warning(f"insufficient_data: {comparison['reason']} · confidence={comparison['confidence']}")
+                st.warning(comparison["warning"])
+            except ValueError as exc:
+                st.error(f"A/B сравнение недоступно: {exc}")
+
+
 def main() -> None:
     upload, production_mode, include_uncertainty = render_sidebar()
     render_header()
@@ -1731,6 +2029,8 @@ def main() -> None:
         render_file_remarks(errors)
         render_welcome()
         return
+
+    treatment_repository = get_treatment_repository()
 
     # --- постоянная маркировка назначения результата ---
     all_ready = all(r.quality.production_ready for r in results)
@@ -1825,10 +2125,10 @@ def main() -> None:
             st.caption(f"Ещё сигналов: {len(alerts) - 6}. Полный список — в ранжировании.")
 
     st.divider()
-    tab_plan, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_pilot = st.tabs(
+    tab_plan, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_pilot, tab_journal = st.tabs(
         ["План мастера", "Ранжирование фонда", "Профили T(z) · P(z)",
          "Детально по скважине", "Что будет, если?", "Экономика риска",
-         "Прогноз во времени", "Сравнение с baseline / Пилот"]
+         "Прогноз во времени", "Сравнение с baseline / Пилот", "Журнал мероприятий"]
     )
 
     # --- первая вкладка: тот же уже сформированный доменный план ---
@@ -2231,6 +2531,11 @@ def main() -> None:
         st.json(evaluation["split_summary"], expanded=False)
         with st.expander("Data contract"):
             st.dataframe(pd.DataFrame(pilot_contract_frame()), width="stretch", hide_index=True)
+
+    with tab_journal:
+        render_treatment_journal(
+            treatment_repository, treatment_well_context(cases_by_name, results)
+        )
 
 
 if __name__ == "__main__":

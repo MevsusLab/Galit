@@ -79,6 +79,19 @@ from .wellbore import (
     pressure_profile,
     temperature_profile,
 )
+from .treatments import (
+    DEFAULT_MIN_SAMPLE_SIZE,
+    SCHEMA_VERSION as TREATMENT_SCHEMA_VERSION,
+    TreatmentConflictError,
+    TreatmentNotFoundError,
+    TreatmentRecord,
+    TreatmentRepository,
+    TreatmentStatus,
+    TreatmentStorageError,
+    compare_reagents,
+    new_treatment,
+    treatment_summary,
+)
 
 __all__ = [
     "CorrosionIntegrityInput",
@@ -147,4 +160,15 @@ __all__ = [
     "stiff_davis_index",
     "temperature_profile",
     "wax_onset_depth",
+    "DEFAULT_MIN_SAMPLE_SIZE",
+    "TREATMENT_SCHEMA_VERSION",
+    "TreatmentConflictError",
+    "TreatmentNotFoundError",
+    "TreatmentRecord",
+    "TreatmentRepository",
+    "TreatmentStatus",
+    "TreatmentStorageError",
+    "compare_reagents",
+    "new_treatment",
+    "treatment_summary",
 ]

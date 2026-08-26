@@ -101,6 +101,8 @@ EVIDENCE_LABELS = {
     "allowed_use": "screening and decision-support only",
     "api_positioning": "integration prototype; not production-ready",
 }
+TREATMENT_STORAGE_PATH = Path(os.environ.get("GALIT_TREATMENT_STORAGE", "data/treatments.json"))
+TREATMENTS = galit.TreatmentRepository(TREATMENT_STORAGE_PATH)
 
 
 # --------------------------------------------------------------------------
@@ -439,6 +441,104 @@ class ScenarioCompareResponse(BaseModel):
     audit_trail: dict[str, Any]
 
 
+class TreatmentCreateIn(BaseModel):
+    well_id: str = Field(min_length=1)
+    well_name: str = Field(min_length=1)
+    event_at: datetime
+    complication_type: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    reagent_name: str = Field(min_length=1)
+    reagent_id: str | None = None
+    dosage: float = Field(ge=0)
+    dosage_unit: str = Field(min_length=1)
+    cost: float = Field(ge=0)
+    currency: str = Field(min_length=3, max_length=3)
+    treatment_type: str = Field(min_length=1)
+    baseline_risk: float | None = Field(default=None, ge=0, le=1)
+    baseline_state: str | None = None
+    expected_result: str | None = None
+    comment: str | None = None
+    source: str = Field(default="manual", min_length=1)
+    well_group: str | None = None
+
+    @field_validator("event_at")
+    @classmethod
+    def aware_event_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("event_at must include a timezone offset")
+        return value
+
+
+class TreatmentUpdateIn(BaseModel):
+    revision: int = Field(ge=1, description="Optimistic concurrency revision from the latest response")
+    status: galit.TreatmentStatus | None = None
+    well_id: str | None = Field(default=None, min_length=1)
+    well_name: str | None = Field(default=None, min_length=1)
+    event_at: datetime | None = None
+    complication_type: str | None = Field(default=None, min_length=1)
+    description: str | None = Field(default=None, min_length=1)
+    reagent_name: str | None = Field(default=None, min_length=1)
+    reagent_id: str | None = None
+    dosage: float | None = Field(default=None, ge=0)
+    dosage_unit: str | None = Field(default=None, min_length=1)
+    cost: float | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    treatment_type: str | None = Field(default=None, min_length=1)
+    baseline_risk: float | None = Field(default=None, ge=0, le=1)
+    baseline_state: str | None = None
+    expected_result: str | None = None
+    actual_result: str | None = None
+    result_metrics: dict[str, float] | None = None
+    success: bool | None = None
+    effect_duration_days: float | None = Field(default=None, ge=0)
+    recurrence: bool | None = None
+    recurrence_date: datetime | None = None
+    comment: str | None = None
+    source: str | None = Field(default=None, min_length=1)
+    well_group: str | None = None
+
+    @field_validator("event_at", "recurrence_date")
+    @classmethod
+    def aware_treatment_dates(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("treatment dates must include a timezone offset")
+        return value
+
+
+class TreatmentOut(BaseModel):
+    id: str
+    well_id: str
+    well_name: str
+    event_at: datetime
+    complication_type: str
+    description: str
+    reagent_name: str
+    reagent_id: str | None
+    dosage: float
+    dosage_unit: str
+    cost: float
+    currency: str
+    treatment_type: str
+    status: galit.TreatmentStatus
+    baseline_risk: float | None
+    baseline_state: str | None
+    expected_result: str | None
+    actual_result: str | None
+    result_metrics: dict[str, float]
+    success: bool | None
+    effect_duration_days: float | None
+    recurrence: bool | None
+    recurrence_date: datetime | None
+    comment: str | None
+    source: str
+    well_group: str | None
+    revision: int
+    archived: bool
+    archived_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
 # --------------------------------------------------------------------------
 # Response assembly
 # --------------------------------------------------------------------------
@@ -555,7 +655,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["Content-Type", "X-Request-ID"],
     expose_headers=["X-Request-ID"],
 )
@@ -788,6 +888,122 @@ async def scenario_compare_endpoint(payload: ScenarioCompareRequest) -> Scenario
     if result.economics is not None:
         data["economics"]["status"] = result.economics.status.value
     return ScenarioCompareResponse(**data)
+
+
+def _treatment_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, galit.TreatmentNotFoundError):
+        return HTTPException(404, detail=str(exc))
+    if isinstance(exc, galit.TreatmentConflictError):
+        return HTTPException(409, detail={"message": str(exc), "type": "conflict"})
+    if isinstance(exc, galit.TreatmentStorageError):
+        return HTTPException(503, detail={"message": str(exc), "type": "storage_error"})
+    return HTTPException(400, detail=str(exc))
+
+
+@app.post("/api/v1/treatments", response_model=TreatmentOut, status_code=201,
+          summary="Create a planned treatment journal record")
+async def create_treatment(payload: TreatmentCreateIn) -> TreatmentOut:
+    try:
+        record = await run_in_threadpool(galit.new_treatment, **payload.model_dump())
+        record = await run_in_threadpool(TREATMENTS.create, record)
+        return TreatmentOut(**record.to_dict())
+    except (ValueError, galit.TreatmentStorageError) as exc:
+        raise _treatment_error(exc) from exc
+
+
+@app.get("/api/v1/treatments", response_model=list[TreatmentOut],
+         summary="List treatment journal records")
+async def list_treatments(
+    well: str | None = None, status: galit.TreatmentStatus | None = None,
+    complication_type: str | None = None, reagent: str | None = None,
+    currency: str | None = None, well_group: str | None = None,
+    include_archived: bool = False, offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> list[TreatmentOut]:
+    try:
+        records = await run_in_threadpool(
+            TREATMENTS.list, well=well, status=status, complication_type=complication_type,
+            reagent=reagent, currency=currency, well_group=well_group,
+            include_archived=include_archived, offset=offset, limit=limit,
+        )
+        return [TreatmentOut(**record.to_dict()) for record in records]
+    except galit.TreatmentStorageError as exc:
+        raise _treatment_error(exc) from exc
+
+
+@app.get("/api/v1/treatments/{record_id}", response_model=TreatmentOut,
+         summary="Get one treatment journal record")
+async def get_treatment(record_id: str) -> TreatmentOut:
+    try:
+        return TreatmentOut(**(await run_in_threadpool(TREATMENTS.get, record_id)).to_dict())
+    except (galit.TreatmentNotFoundError, galit.TreatmentStorageError) as exc:
+        raise _treatment_error(exc) from exc
+
+
+@app.patch("/api/v1/treatments/{record_id}", response_model=TreatmentOut,
+           summary="Edit a record before assessment or advance its lifecycle")
+async def update_treatment(record_id: str, payload: TreatmentUpdateIn) -> TreatmentOut:
+    try:
+        current = await run_in_threadpool(TREATMENTS.get, record_id)
+        changes = payload.model_dump(exclude={"revision", "status"}, exclude_unset=True)
+        updated = (current.transition(payload.status, **changes)
+                   if payload.status is not None else current.edit(**changes))
+        updated = await run_in_threadpool(
+            TREATMENTS.update, updated, expected_revision=payload.revision)
+        return TreatmentOut(**updated.to_dict())
+    except (ValueError, galit.TreatmentConflictError, galit.TreatmentNotFoundError,
+            galit.TreatmentStorageError) as exc:
+        raise _treatment_error(exc) from exc
+
+
+@app.delete("/api/v1/treatments/{record_id}", response_model=TreatmentOut,
+            summary="Soft archive a treatment record")
+async def archive_treatment(
+    record_id: str, revision: int = Query(ge=1),
+) -> TreatmentOut:
+    try:
+        archived = await run_in_threadpool(
+            TREATMENTS.archive, record_id, expected_revision=revision)
+        return TreatmentOut(**archived.to_dict())
+    except (galit.TreatmentConflictError, galit.TreatmentNotFoundError,
+            galit.TreatmentStorageError) as exc:
+        raise _treatment_error(exc) from exc
+
+
+@app.get("/api/v1/treatments/analytics/summary", response_model=None,
+         summary="Aggregate assessed treatment effects")
+async def treatment_analytics(
+    group_by: str = Query(default="reagent", pattern="^(well|complication_type|reagent|well_group)$"),
+    well: str | None = None, complication_type: str | None = None,
+    currency: str | None = None,
+) -> dict[str, Any]:
+    try:
+        records = await run_in_threadpool(
+            TREATMENTS.list, well=well, complication_type=complication_type, currency=currency,
+        )
+        return await run_in_threadpool(galit.treatment_summary, records, group_by)
+    except (ValueError, galit.TreatmentStorageError) as exc:
+        raise _treatment_error(exc) from exc
+
+
+@app.get("/api/v1/treatments/analytics/compare", response_model=None,
+         summary="Compare reagents on an explicit observational metric")
+async def treatment_compare(
+    reagent_a: str, reagent_b: str,
+    metric: str = Query(default="success_rate", pattern="^(success_rate|mean_effect_days)$"),
+    min_sample_size: int = Query(default=galit.DEFAULT_MIN_SAMPLE_SIZE, ge=2, le=1000),
+    complication_type: str = Query(min_length=1),
+    well_group: str = Query(min_length=1),
+) -> dict[str, Any]:
+    try:
+        records = await run_in_threadpool(TREATMENTS.list)
+        return await run_in_threadpool(
+            galit.compare_reagents, records, reagent_a, reagent_b, metric=metric,
+            min_sample_size=min_sample_size, complication_type=complication_type,
+            well_group=well_group,
+        )
+    except (ValueError, galit.TreatmentStorageError) as exc:
+        raise _treatment_error(exc) from exc
 
 
 @app.post(
