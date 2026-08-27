@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import html
 import io
+import json
 import math
 import os
 from dataclasses import replace
@@ -308,6 +309,32 @@ def inject_css() -> None:
             -webkit-backdrop-filter: blur(10px);
         }}
         section[data-testid="stSidebar"] > div {{ background: transparent; }}
+        /* Панель — постоянная рабочая область. Прячем только кнопку закрытия.
+           Кнопку восстановления намеренно оставляем доступной: она нужна,
+           если браузер сохранил свёрнутое состояние от прошлого запуска. */
+        [data-testid="stSidebarCollapseButton"],
+        button[aria-label="Close sidebar"],
+        button[aria-label="Скрыть боковую панель"] {{
+            display: none !important;
+            visibility: hidden !important;
+            pointer-events: none !important;
+        }}
+        /* В свёрнутом состоянии expand-кнопка находится внутри stHeader.
+           Возвращаем только этот узкий слой шапки, иначе кнопка не кликается. */
+        header[data-testid="stHeader"]:has([data-testid="stExpandSidebarButton"]),
+        [data-testid="stHeader"]:has([data-testid="stExpandSidebarButton"]) {{
+            display: flex !important;
+            visibility: visible !important;
+            height: 3.75rem !important;
+            min-height: 3.75rem !important;
+            background: transparent !important;
+            pointer-events: none !important;
+        }}
+        [data-testid="stExpandSidebarButton"] {{
+            display: flex !important;
+            visibility: visible !important;
+            pointer-events: auto !important;
+        }}
         section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {{
             padding-top: 0;
         }}
@@ -1806,6 +1833,120 @@ def get_treatment_repository() -> galit.TreatmentRepository:
     return cached
 
 
+def passport_storage_path() -> Path:
+    configured = Path(os.environ.get("GALIT_PASSPORT_STORE", "data/well_passports.json"))
+    return configured if configured.is_absolute() else PROJECT_ROOT / configured
+
+
+def get_passport_repository() -> galit.PassportRepository:
+    path = str(passport_storage_path().resolve())
+    cached = st.session_state.get("passport_repository")
+    if cached is None or str(cached.path.resolve()) != path:
+        cached = galit.PassportRepository(path)
+        st.session_state["passport_repository"] = cached
+    return cached
+
+
+def passport_event_frame(events: list[galit.PassportEvent]) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "Дата": item.event_at, "Тип": item.event_type.value, "Заголовок": item.title,
+        "Данные": json.dumps(item.data, ensure_ascii=False), "Заметки": item.notes,
+        "Вложение": item.attachment.filename if item.attachment else None,
+        "Источник": item.source, "Ревизия": item.revision,
+    } for item in events])
+
+
+def passport_series(events: list[galit.PassportEvent], kind: galit.PassportEventType,
+                    keys: tuple[str, ...]) -> pd.DataFrame:
+    rows = []
+    for item in sorted(events, key=lambda value: value.event_at):
+        if item.event_type is kind:
+            row = {"Дата": item.event_at}
+            row.update({key: item.data.get(key) for key in keys})
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def render_well_passport(repository: galit.PassportRepository,
+                         treatments: galit.TreatmentRepository,
+                         wells: list[str]) -> None:
+    st.subheader("Цифровой паспорт скважины")
+    st.caption("Единая UTC-хронология. Журнал мероприятий агрегируется при чтении и не дублируется.")
+    manual = st.text_input("Или укажите скважину вручную", key="passport_manual_well")
+    well = manual.strip() or st.selectbox("Скважина паспорта", wells or ["Скважина"], key="passport_well")
+    try:
+        events = repository.list(well=well)
+        treatment_rows = treatments.list(well=well)
+        summary = galit.passport_summary(events, treatment_rows)
+    except (galit.PassportStorageError, galit.TreatmentStorageError) as exc:
+        st.error(f"Паспорт недоступен: {exc}")
+        return
+    a, b, c, d = st.columns(4)
+    a.metric("Событий паспорта", summary["event_count"])
+    b.metric("Обработок", summary["treatment_count"])
+    c.metric("Оценено обработок", summary["assessed_treatments"])
+    d.metric("Последнее событие", summary["last_event_at"].date().isoformat() if summary["last_event_at"] else "—")
+
+    risk = passport_series(events, galit.PassportEventType.RISK_SNAPSHOT,
+                           ("integrated_risk", "wax_risk", "halite_risk", "calcite_risk", "corrosion_risk"))
+    rate = passport_series(events, galit.PassportEventType.RATE_CHANGE,
+                           ("oil_rate_m3d", "water_rate_m3d", "gas_rate_m3d"))
+    left, right = st.columns(2)
+    with left:
+        st.markdown("#### Риск")
+        st.info("Нет снимков риска.") if risk.empty else st.line_chart(risk.set_index("Дата"))
+    with right:
+        st.markdown("#### Дебит")
+        st.info("Нет снимков дебита.") if rate.empty else st.line_chart(rate.set_index("Дата"))
+
+    st.markdown("#### Единая временная шкала")
+    timeline = galit.passport_timeline(events, treatment_rows)
+    st.dataframe(pd.DataFrame([{
+        "Дата": row["event_at"], "Источник": row["origin"], "Тип": row["event_type"],
+        "Событие": row["title"], "Описание": row.get("notes"),
+    } for row in timeline]), width="stretch", hide_index=True)
+    categories = [galit.PassportEventType.REPAIR, galit.PassportEventType.COMPLICATION,
+                  galit.PassportEventType.REAGENT_EFFECTIVENESS]
+    labels = ["Ремонты", "Осложнения", "Эффективность реагентов"]
+    cols = st.columns(3)
+    for column, category, label in zip(cols, categories, labels):
+        with column:
+            st.markdown(f"#### {label}")
+            frame = passport_event_frame([item for item in events if item.event_type is category])
+            st.dataframe(frame, width="stretch", hide_index=True)
+
+    st.markdown("#### Добавить событие")
+    kind = st.selectbox("Тип события", [item.value for item in galit.PassportEventType], key="passport_kind")
+    event_type = galit.PassportEventType(kind)
+    with st.form("passport-add", clear_on_submit=True):
+        title = st.text_input("Заголовок")
+        notes = st.text_area("Описание / заключение")
+        data_text = st.text_area("Данные JSON", value="{}", help='Например: {"oil_rate_m3d": 12.5}')
+        uploaded = st.file_uploader("Фотография или лабораторный файл",
+                                    type=["jpg", "jpeg", "png", "pdf", "txt", "csv"])
+        submitted = st.form_submit_button("Добавить в паспорт")
+    if submitted:
+        attachment = None
+        try:
+            data = json.loads(data_text)
+            if event_type in {galit.PassportEventType.DEPOSIT_PHOTO, galit.PassportEventType.LAB_REPORT}:
+                if uploaded is None:
+                    raise ValueError("для этого типа требуется вложение")
+                attachment = repository.save_attachment(uploaded.name, uploaded.type, uploaded.getvalue())
+            elif uploaded is not None:
+                raise ValueError("вложения разрешены только для deposit_photo и lab_report")
+            event = galit.new_passport_event(
+                well_id=well, well_name=well, event_type=event_type,
+                event_at=datetime.now(timezone.utc), title=title, data=data,
+                notes=notes or None, source="dashboard", attachment=attachment,
+            )
+            repository.create(event)
+            st.success("Событие добавлено.")
+            st.rerun()
+        except (ValueError, json.JSONDecodeError, galit.PassportStorageError) as exc:
+            st.error(f"Событие не сохранено: {exc}")
+
+
 def ensure_utc(value: datetime) -> datetime:
     """Normalize Streamlit datetime values to the repository's aware UTC contract."""
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
@@ -2125,6 +2266,7 @@ def main() -> None:
         return
 
     treatment_repository = get_treatment_repository()
+    passport_repository = get_passport_repository()
 
     # --- постоянная маркировка назначения результата ---
     all_ready = all(r.quality.production_ready for r in results)
@@ -2223,10 +2365,10 @@ def main() -> None:
             st.caption(f"Ещё сигналов: {len(alerts) - 6}. Полный список — в ранжировании.")
 
     st.divider()
-    tab_plan, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_pilot, tab_journal = st.tabs(
+    tab_plan, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_pilot, tab_passport, tab_journal = st.tabs(
         ["План мастера", "Ранжирование фонда", "Профили T(z) · P(z)",
          "Детально по скважине", "Что будет, если?", "Экономика риска",
-         "Прогноз во времени", "Сравнение с baseline / Пилот", "Журнал мероприятий"]
+         "Прогноз во времени", "Сравнение с baseline / Пилот", "Цифровой паспорт", "Журнал мероприятий"]
     )
 
     # --- первая вкладка: тот же уже сформированный доменный план ---
@@ -2629,6 +2771,10 @@ def main() -> None:
         st.json(evaluation["split_summary"], expanded=False)
         with st.expander("Data contract"):
             st.dataframe(pd.DataFrame(pilot_contract_frame()), width="stretch", hide_index=True)
+
+    with tab_passport:
+        render_well_passport(passport_repository, treatment_repository,
+                             sorted(cases_by_name))
 
     with tab_journal:
         render_treatment_journal(

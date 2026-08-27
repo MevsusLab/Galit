@@ -92,6 +92,22 @@ from .treatments import (
     new_treatment,
     treatment_summary,
 )
+from .passport import (
+    ALLOWED_ATTACHMENT_MIMES,
+    MAX_ATTACHMENT_SIZE,
+    PASSPORT_SCHEMA_VERSION,
+    AttachmentMetadata,
+    PassportConflictError,
+    PassportEvent,
+    PassportEventType,
+    PassportNotFoundError,
+    PassportRepository,
+    PassportStorageError,
+    new_passport_event,
+    passport_summary,
+    passport_timeline,
+    safe_attachment_name,
+)
 
 __all__ = [
     "CorrosionIntegrityInput",
@@ -171,4 +187,18 @@ __all__ = [
     "compare_reagents",
     "new_treatment",
     "treatment_summary",
+    "ALLOWED_ATTACHMENT_MIMES",
+    "MAX_ATTACHMENT_SIZE",
+    "PASSPORT_SCHEMA_VERSION",
+    "AttachmentMetadata",
+    "PassportConflictError",
+    "PassportEvent",
+    "PassportEventType",
+    "PassportNotFoundError",
+    "PassportRepository",
+    "PassportStorageError",
+    "new_passport_event",
+    "passport_summary",
+    "passport_timeline",
+    "safe_attachment_name",
 ]

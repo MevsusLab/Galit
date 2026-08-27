@@ -159,6 +159,60 @@ class RecentDiagnosisStore:
 RECENT_DIAGNOSES = RecentDiagnosisStore()
 TELEGRAM_TEXT_LIMIT = 4096
 TREATMENTS = galit.TreatmentRepository(os.environ.get("GALIT_TREATMENT_STORAGE", "data/treatments.json"))
+PASSPORTS = galit.PassportRepository(os.environ.get("GALIT_PASSPORT_STORE", "data/well_passports.json"))
+
+
+PASSPORT_ALIASES = {
+    "well": "well", "скважина": "well", "type": "event_type", "тип": "event_type",
+    "title": "title", "заголовок": "title", "text": "text", "текст": "text",
+    "oil": "oil_rate_m3d", "нефть": "oil_rate_m3d",
+    "water": "water_rate_m3d", "вода": "water_rate_m3d",
+    "gas": "gas_rate_m3d", "газ": "gas_rate_m3d", "limit": "limit", "лимит": "limit",
+}
+
+
+def parse_passport_command(text: str) -> tuple[dict[str, str], list[str]]:
+    try:
+        tokens = shlex.split(text, posix=True)[1:]
+    except ValueError as exc:
+        return {}, ["ошибка кавычек: " + str(exc)]
+    values: dict[str, str] = {}
+    errors: list[str] = []
+    for token in tokens:
+        raw_key, separator, raw = token.partition("=")
+        key = PASSPORT_ALIASES.get(raw_key.casefold())
+        if not separator or key is None or not raw.strip():
+            errors.append(f"неверный параметр: {token}")
+        elif key in values:
+            errors.append(f"параметр задан повторно: {raw_key}")
+        else:
+            values[key] = raw.strip()
+    return values, errors
+
+
+def format_passport_summary(well: str, events: list[galit.PassportEvent],
+                            treatments: list[galit.TreatmentRecord]) -> list[str]:
+    summary = galit.passport_summary(events, treatments)
+    latest_rate = summary["latest_rate"] or {}
+    latest_risk = summary["latest_risk"] or {}
+    blocks = [
+        f"<b>Цифровой паспорт · {html.escape(well)}</b>",
+        f"Событий: {summary['event_count']} · обработок: {summary['treatment_count']} · оценено: {summary['assessed_treatments']}",
+        "Последний дебит: " + (f"нефть {latest_rate.get('oil_rate_m3d', '—')} · вода {latest_rate.get('water_rate_m3d', '—')} м³/сут" if latest_rate else "—"),
+        "Последний риск: " + (f"{latest_risk.get('integrated_risk', '—')}" if latest_risk else "—"),
+    ]
+    return _forecast_chunks(blocks)
+
+
+def format_passport_history(events: list[galit.PassportEvent],
+                            treatments: list[galit.TreatmentRecord]) -> list[str]:
+    rows = galit.passport_timeline(events, treatments)
+    if not rows:
+        return ["История паспорта пуста."]
+    blocks = ["<b>История паспорта</b>"]
+    for row in rows:
+        blocks.append(f"{html.escape(row['event_at'][:10])} · {html.escape(row['event_type'])}\n{html.escape(row['title'])}")
+    return _forecast_chunks(blocks)
 
 
 TREATMENT_ALIASES = {
@@ -904,8 +958,10 @@ HELP_TEXT = (
     "<code>парафин=</code>, <code>температура=</code>, "
     "<code>градиент=</code>, <code>co2=</code>, <code>буферное=</code>. "
     "Десятичный разделитель — точка или запятая.\n\n"
-    "<b>Команды:</b> <code>/plan</code>, <code>/forecast [скважина]</code>, "
+    "<b>Команды:</b> <code>/plan</code>, <code>/forecast</code>, "
     "<code>/economics</code>, <code>/plan_clear</code>.\n"
+    "Паспорт: <code>/passport</code>, <code>/passport_history</code>, "
+    "<code>/passport_add</code>, <code>/passport_rate</code>.\n"
     "Сценарий: <code>/scenario oil_pct=-10 temperature=2 wash=yes</code>; "
     "выбор: <code>well=Имя</code>; явный эффект: "
     "<code>inhibitor_effect=0.8 source=паспорт</code>. История локальная и исчезает при перезапуске."
@@ -1183,6 +1239,85 @@ async def cmd_treatment_stats(message: Message) -> None:
             await message.answer(chunk)
     except galit.TreatmentStorageError as exc:
         await message.answer(html.escape(str(exc)))
+
+
+@dp.message(Command("passport"))
+async def cmd_passport(message: Message) -> None:
+    values, errors = parse_passport_command(message.text or "")
+    well = values.get("well", "")
+    if errors or not well:
+        await message.answer("Формат: <code>/passport well=\"Скважина 12\"</code>")
+        return
+    try:
+        events = await asyncio.to_thread(PASSPORTS.list, well=well)
+        treatments = await asyncio.to_thread(TREATMENTS.list, well=well)
+        for chunk in format_passport_summary(well, events, treatments):
+            await message.answer(chunk)
+    except (galit.PassportStorageError, galit.TreatmentStorageError) as exc:
+        await message.answer("Паспорт временно недоступен: " + html.escape(str(exc)))
+
+
+@dp.message(Command("passport_history"))
+async def cmd_passport_history(message: Message) -> None:
+    values, errors = parse_passport_command(message.text or "")
+    well = values.get("well", "")
+    if errors or not well:
+        await message.answer("Формат: <code>/passport_history well=Имя limit=10</code>")
+        return
+    try:
+        limit = min(max(int(values.get("limit", "10")), 1), 50)
+        events = await asyncio.to_thread(PASSPORTS.list, well=well, limit=limit)
+        treatments = await asyncio.to_thread(TREATMENTS.list, well=well, limit=limit)
+        for chunk in format_passport_history(events, treatments):
+            await message.answer(chunk)
+    except (ValueError, galit.PassportStorageError, galit.TreatmentStorageError) as exc:
+        await message.answer("Параметры не приняты: " + html.escape(str(exc)))
+
+
+@dp.message(Command("passport_add"))
+async def cmd_passport_add(message: Message) -> None:
+    values, errors = parse_passport_command(message.text or "")
+    required = {"well", "event_type", "title", "text"}
+    missing = sorted(required - values.keys())
+    if errors or missing:
+        await message.answer("Формат: <code>/passport_add well=Имя type=complication title=Заголовок text=Описание</code>")
+        return
+    try:
+        kind = galit.PassportEventType(values["event_type"])
+        if kind in {galit.PassportEventType.DEPOSIT_PHOTO, galit.PassportEventType.LAB_REPORT,
+                    galit.PassportEventType.RATE_CHANGE}:
+            raise ValueError("для вложений используйте сайт/API, для дебита — /passport_rate")
+        data_key = "complication_type" if kind is galit.PassportEventType.COMPLICATION else "description"
+        event = galit.new_passport_event(
+            well_id=values["well"], well_name=values["well"], event_type=kind,
+            event_at=datetime.now(timezone.utc), title=values["title"],
+            data={data_key: values["text"]}, notes=values["text"], source="telegram",
+        )
+        await asyncio.to_thread(PASSPORTS.create, event)
+        await message.answer("Событие добавлено в паспорт.")
+    except (ValueError, galit.PassportStorageError) as exc:
+        await message.answer("Событие не сохранено: " + html.escape(str(exc)))
+
+
+@dp.message(Command("passport_rate"))
+async def cmd_passport_rate(message: Message) -> None:
+    values, errors = parse_passport_command(message.text or "")
+    well = values.get("well", "")
+    rate_keys = ("oil_rate_m3d", "water_rate_m3d", "gas_rate_m3d")
+    if errors or not well or not any(key in values for key in rate_keys):
+        await message.answer("Формат: <code>/passport_rate well=Имя oil=10 water=20 gas=0</code>")
+        return
+    try:
+        data = {key: float(values[key].replace(",", ".")) for key in rate_keys if key in values}
+        event = galit.new_passport_event(
+            well_id=well, well_name=well, event_type=galit.PassportEventType.RATE_CHANGE,
+            event_at=datetime.now(timezone.utc), title="Снимок дебита", data=data,
+            source="telegram",
+        )
+        await asyncio.to_thread(PASSPORTS.create, event)
+        await message.answer("Снимок дебита добавлен в паспорт.")
+    except (ValueError, galit.PassportStorageError) as exc:
+        await message.answer("Снимок не сохранён: " + html.escape(str(exc)))
 
 
 @dp.message(Command("plan"))

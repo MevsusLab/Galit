@@ -103,6 +103,8 @@ EVIDENCE_LABELS = {
 }
 TREATMENT_STORAGE_PATH = Path(os.environ.get("GALIT_TREATMENT_STORAGE", "data/treatments.json"))
 TREATMENTS = galit.TreatmentRepository(TREATMENT_STORAGE_PATH)
+PASSPORT_STORAGE_PATH = Path(os.environ.get("GALIT_PASSPORT_STORE", "data/well_passports.json"))
+PASSPORTS = galit.PassportRepository(PASSPORT_STORAGE_PATH)
 
 
 # --------------------------------------------------------------------------
@@ -537,6 +539,43 @@ class TreatmentOut(BaseModel):
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class PassportEventCreateIn(BaseModel):
+    well_id: str = Field(min_length=1, max_length=200)
+    well_name: str = Field(min_length=1, max_length=200)
+    event_type: galit.PassportEventType
+    event_at: datetime
+    title: str = Field(min_length=1, max_length=500)
+    data: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = Field(default=None, max_length=10000)
+    source: str = Field(default="api", min_length=1, max_length=100)
+
+    @field_validator("event_at")
+    @classmethod
+    def aware_passport_date(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("event_at must include a timezone offset")
+        return value
+
+
+class PassportEventUpdateIn(BaseModel):
+    revision: int = Field(ge=1)
+    well_id: str | None = Field(default=None, min_length=1, max_length=200)
+    well_name: str | None = Field(default=None, min_length=1, max_length=200)
+    event_type: galit.PassportEventType | None = None
+    event_at: datetime | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    data: dict[str, Any] | None = None
+    notes: str | None = Field(default=None, max_length=10000)
+    source: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("event_at")
+    @classmethod
+    def aware_optional_passport_date(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("event_at must include a timezone offset")
+        return value
 
 
 # --------------------------------------------------------------------------
@@ -1004,6 +1043,117 @@ async def treatment_compare(
         )
     except (ValueError, galit.TreatmentStorageError) as exc:
         raise _treatment_error(exc) from exc
+
+
+def _passport_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, galit.PassportNotFoundError):
+        return HTTPException(404, detail=str(exc))
+    if isinstance(exc, galit.PassportConflictError):
+        return HTTPException(409, detail={"message": str(exc), "type": "conflict"})
+    if isinstance(exc, galit.PassportStorageError):
+        return HTTPException(503, detail={"message": str(exc), "type": "storage_error"})
+    return HTTPException(400, detail=str(exc))
+
+
+@app.post("/api/v1/passport/events", status_code=201, response_model=None,
+          summary="Add an event to a digital well passport")
+async def create_passport_event(payload: PassportEventCreateIn) -> dict[str, Any]:
+    if payload.event_type in {galit.PassportEventType.DEPOSIT_PHOTO, galit.PassportEventType.LAB_REPORT}:
+        raise HTTPException(400, detail="attachment events must be uploaded through /api/v1/passport/attachments")
+    try:
+        event = await run_in_threadpool(galit.new_passport_event, **payload.model_dump())
+        return (await run_in_threadpool(PASSPORTS.create, event)).to_dict()
+    except (ValueError, galit.PassportStorageError) as exc:
+        raise _passport_error(exc) from exc
+
+
+@app.get("/api/v1/passport/events", response_model=None, summary="Filter passport events")
+async def list_passport_events(
+    well: str | None = None, event_type: galit.PassportEventType | None = None,
+    date_from: datetime | None = None, date_to: datetime | None = None,
+    offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=1000),
+) -> list[dict[str, Any]]:
+    try:
+        rows = await run_in_threadpool(PASSPORTS.list, well=well, event_type=event_type,
+                                       date_from=date_from, date_to=date_to, offset=offset, limit=limit)
+        return [row.to_dict() for row in rows]
+    except (ValueError, galit.PassportStorageError) as exc:
+        raise _passport_error(exc) from exc
+
+
+@app.get("/api/v1/passport/events/{event_id}", response_model=None, summary="Get one passport event")
+async def get_passport_event(event_id: str) -> dict[str, Any]:
+    try:
+        return (await run_in_threadpool(PASSPORTS.get, event_id)).to_dict()
+    except (galit.PassportNotFoundError, galit.PassportStorageError) as exc:
+        raise _passport_error(exc) from exc
+
+
+@app.patch("/api/v1/passport/events/{event_id}", response_model=None, summary="Update a passport event")
+async def update_passport_event(event_id: str, payload: PassportEventUpdateIn) -> dict[str, Any]:
+    try:
+        current = await run_in_threadpool(PASSPORTS.get, event_id)
+        changes = payload.model_dump(exclude={"revision"}, exclude_unset=True)
+        updated = current.edit(**changes)
+        return (await run_in_threadpool(PASSPORTS.update, updated,
+                                        expected_revision=payload.revision)).to_dict()
+    except (ValueError, galit.PassportNotFoundError, galit.PassportConflictError,
+            galit.PassportStorageError) as exc:
+        raise _passport_error(exc) from exc
+
+
+@app.delete("/api/v1/passport/events/{event_id}", response_model=None, summary="Delete a passport event")
+async def delete_passport_event(event_id: str, revision: int = Query(ge=1)) -> dict[str, Any]:
+    try:
+        return (await run_in_threadpool(PASSPORTS.delete, event_id,
+                                        expected_revision=revision)).to_dict()
+    except (galit.PassportNotFoundError, galit.PassportConflictError,
+            galit.PassportStorageError) as exc:
+        raise _passport_error(exc) from exc
+
+
+@app.post("/api/v1/passport/attachments", status_code=201, response_model=None,
+          summary="Upload a deposit photo or laboratory report")
+async def upload_passport_attachment(request: Request) -> dict[str, Any]:
+    filename = request.headers.get("x-file-name", "")
+    mime_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    kind = request.query_params.get("event_type", "")
+    try:
+        event_type = galit.PassportEventType(kind)
+        if event_type not in {galit.PassportEventType.DEPOSIT_PHOTO, galit.PassportEventType.LAB_REPORT}:
+            raise ValueError("event_type must be deposit_photo or lab_report")
+        content = await request.body()
+        if len(content) > galit.MAX_ATTACHMENT_SIZE:
+            raise HTTPException(413, detail=f"attachment exceeds {galit.MAX_ATTACHMENT_SIZE} bytes")
+        attachment = await run_in_threadpool(PASSPORTS.save_attachment, filename, mime_type, content)
+        event = galit.new_passport_event(
+            well_id=request.query_params.get("well_id", ""),
+            well_name=request.query_params.get("well_name", ""), event_type=event_type,
+            event_at=datetime.now().astimezone(), title=request.query_params.get("title", filename),
+            data={}, notes=request.query_params.get("notes") or None, source="api-upload",
+            attachment=attachment,
+        )
+        return (await run_in_threadpool(PASSPORTS.create, event)).to_dict()
+    except HTTPException:
+        raise
+    except (ValueError, galit.PassportStorageError) as exc:
+        raise _passport_error(exc) from exc
+
+
+@app.get("/api/v1/passport/{well}", response_model=None,
+         summary="Get unified passport timeline and summary including treatments")
+async def get_passport(well: str, event_type: galit.PassportEventType | None = None,
+                       date_from: datetime | None = None, date_to: datetime | None = None,
+                       limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
+    try:
+        events = await run_in_threadpool(PASSPORTS.list, well=well, event_type=event_type,
+                                         date_from=date_from, date_to=date_to, limit=limit)
+        treatments = await run_in_threadpool(TREATMENTS.list, well=well, limit=limit)
+        return {"well": well, "schema_version": galit.PASSPORT_SCHEMA_VERSION,
+                "summary": galit.passport_summary(events, treatments),
+                "timeline": galit.passport_timeline(events, treatments)}
+    except (ValueError, galit.PassportStorageError, galit.TreatmentStorageError) as exc:
+        raise _passport_error(exc) from exc
 
 
 @app.post(

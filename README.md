@@ -324,6 +324,18 @@ in-memory: максимум 20 расчётов на чат и 500 недавн�
 выполняются через `asyncio.to_thread`; сообщения режутся на части короче
 Telegram-лимита 4096 символов.
 
+### Цифровой паспорт скважины
+
+Паспорт хранит единую UTC-хронологию по `well_id`/`well_name`: `parameters_analysis`, `risk_snapshot`, `repair`, `rate_change`, `complication`, `deposit_photo`, `lab_report`, `reagent_effectiveness`. Существующий журнал treatments подключается к сводке и timeline при чтении и не копируется.
+
+JSON schema version 1 хранится в `data/well_passports.json` (переопределение `GALIT_PASSPORT_STORE`). Запись блокируется и выполняется через atomic replace. Вложения лежат рядом в `passport_attachments/`; допустимы JPEG, PNG, PDF, TXT, CSV до 10 MiB. Имя очищается, MIME обязан соответствовать расширению, путь не может выйти из каталога. Даты ISO 8601 обязаны содержать timezone; числа конечные, риски/эффективность 0…1, дебиты неотрицательные.
+
+**API:** `POST/GET /api/v1/passport/events`, `GET/PATCH/DELETE /api/v1/passport/events/{id}`, `GET /api/v1/passport/{well}` для сводки и агрегированной истории, `POST /api/v1/passport/attachments?well_id=...&well_name=...&event_type=lab_report&title=...` с raw body и заголовком `X-File-Name`. Фильтры событий: `well`, `event_type`, `date_from`, `date_to`, `offset`, `limit`. Изменение/удаление требует актуальную `revision`.
+
+**Сайт:** вкладка «Цифровой паспорт» содержит выбор скважины, KPI, единую timeline, графики риска/дебита, таблицы ремонтов, осложнений и эффективности реагентов, JSON-форму события и безопасную загрузку фото/лабораторного файла.
+
+**Telegram:** `/passport well="Скважина 12"`, `/passport_history well="Скважина 12" limit=10`, `/passport_add well="Скважина 12" type=complication title="АСПО" text="Рост давления"`, `/passport_rate well="Скважина 12" oil=10 water=20 gas=0`. Вложения добавляются через сайт/API.
+
 ### Журнал мероприятий и фактического эффекта
 
 Журнал связывает назначенное мероприятие с наблюдаемым результатом по скважине. Запись хранит скважину и группу, дату события, осложнение, описание, реагент, дозу и единицу, стоимость и валюту, тип обработки, исходный риск/состояние, ожидаемый и фактический результат, числовые метрики, успех, длительность эффекта, повтор осложнения и его дату. Жизненный цикл явный: `planned → in_progress → completed → assessed`; каждое изменение требует актуальную `revision`, а оценённые и архивные записи неизменяемы. Архив по умолчанию скрыт.
