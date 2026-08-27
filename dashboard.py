@@ -20,6 +20,7 @@ Enterprise-интерфейс для инженеров и мастеров до
 from __future__ import annotations
 
 import base64
+import html
 import io
 import math
 import os
@@ -220,7 +221,7 @@ def inject_css() -> None:
         f"url('{background_uri}') center / cover fixed no-repeat"
         if background_uri else "linear-gradient(135deg, #DCE9E2, #F6F8F7)"
     )
-    st.markdown(
+    st.html(
         f"""
         <style>
         /* ---------- базовая типографика ---------- */
@@ -258,11 +259,11 @@ def inject_css() -> None:
         /* строгий режим: без фирменной радужной полосы и колонтитула */
         div[data-testid="stDecoration"] {{ display: none; }}
         #MainMenu, footer {{ visibility: hidden; }}
-        header[data-testid="stHeader"] {{
-            background: rgba(255, 255, 255, 0.92);
-            border-bottom: 1px solid {HAIRLINE};
-            backdrop-filter: blur(8px);
-            -webkit-backdrop-filter: blur(8px);
+        header[data-testid="stHeader"],
+        [data-testid="stHeader"] {{
+            display: none !important;
+            height: 0 !important;
+            min-height: 0 !important;
         }}
 
         /* ---------- шапка приложения ---------- */
@@ -311,18 +312,17 @@ def inject_css() -> None:
             padding-top: 0;
         }}
         section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{
-            transform: translateY(-68px);
+            --sidebar-logo-lift: clamp(44px, 6vh, 56px);
+            --sidebar-content-lift: clamp(92px, 12vh, 112px);
+            padding-top: clamp(12px, 2vh, 18px);
         }}
         .sidebar-logo {{
             display: block;
-            width: min(100%, 220px);
+            width: clamp(150px, 66%, 166px);
             height: auto;
-            margin: 0 auto 0 0;
+            margin: 0 auto calc(-1 * var(--sidebar-content-lift)) 0;
             object-fit: contain;
-        }}
-        .sidebar-logo + div[data-testid="stDivider"] {{
-            margin-top: 10px;
-            margin-bottom: 12px;
+            transform: translateY(calc(-1 * var(--sidebar-logo-lift)));
         }}
 
         /* Streamlit/BaseWeb controls: explicit light surfaces survive host dark mode. */
@@ -584,9 +584,87 @@ def inject_css() -> None:
         }}
         div[data-testid="stExpander"] {{ border-radius: {RADIUS}; }}
         div[data-testid="stAlert"] {{ border-radius: 12px; }}
+
+        /* ---------- redesign 2026: light three-column operations dashboard ---------- */
+        .stApp {{ background: #F7F9F8; }}
+        .stApp [data-testid="stMainBlockContainer"] {{
+            max-width: 1680px; padding-top: 24px; padding-left: 2rem;
+            padding-right: 2rem; margin-top: 0;
+        }}
+        section[data-testid="stSidebar"] {{ width: 248px !important; background: #FFFFFF; }}
+        section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{
+            --sidebar-logo-lift: clamp(52px, 7vh, 64px);
+            --sidebar-content-lift: clamp(48px, 6vh, 60px);
+            transform: none;
+            padding-top: 0;
+        }}
+        .sidebar-logo {{
+            width: min(180px, calc(100% - 16px));
+            margin: 0 0 calc(-1 * var(--sidebar-content-lift)) 8px;
+            transform: translateY(calc(-1 * var(--sidebar-logo-lift)));
+            transform-origin: left top;
+        }}
+        .sidebar-nav {{ gap: 5px; }}
+        .sidebar-nav-item {{ min-height: 42px; padding: 9px 11px; border-radius: 10px;
+            font-size: 13px; font-weight: 600; }}
+        .sidebar-nav-item:first-child {{ background: #EAF6EF; color: {GREEN_700}; }}
+        .sidebar-nav-index {{ width: 23px; height: 23px; border-radius: 7px;
+            background: transparent; color: inherit; font-size: 0; }}
+        .sidebar-nav-index::before {{ font-size: 15px; content: '◌'; }}
+        .sidebar-nav-item:first-child .sidebar-nav-index::before {{ content: '▦'; }}
+        .dashboard-header {{ display:flex; align-items:flex-end; justify-content:space-between;
+            gap:18px; margin: 2px 0 18px; }}
+        .dashboard-title {{ font-size: 28px; line-height:1.1; font-weight: 780;
+            letter-spacing:-.55px; color:{GREEN_700}; }}
+        .dashboard-subtitle {{ margin-top:6px; color:{INK_MUTED}; font-size:13px; }}
+        .dashboard-filters {{ display:flex; align-items:center; gap:9px; flex-wrap:wrap; }}
+        .filter-pill {{ display:inline-flex; align-items:center; gap:8px; min-height:40px;
+            padding:8px 13px; border:1px solid {HAIRLINE}; border-radius:10px;
+            background:#FFFFFF; color:{INK}; font-size:12px; font-weight:650;
+            box-shadow:{SHADOW_SOFT}; }}
+        .filter-pill .filter-icon {{ color:{GREEN_700}; font-size:14px; }}
+        div[data-testid="stMetric"] {{ min-height: 118px; padding:18px 18px 14px 62px;
+            position:relative; border:0; }}
+        div[data-testid="stMetric"]::before {{ position:absolute; left:18px; top:20px;
+            display:grid; place-items:center; width:32px; height:32px; border-radius:9px;
+            background:{STATUS_OK_BG}; color:{STATUS_OK}; content:'◆'; font-size:13px; }}
+        div[data-testid="column"]:nth-of-type(2) div[data-testid="stMetric"] {{ background:{STATUS_CRIT_BG}; }}
+        div[data-testid="column"]:nth-of-type(2) div[data-testid="stMetric"]::before {{
+            background:#FFFFFF; color:{STATUS_CRIT}; content:'!'; font-weight:900; }}
+        div[data-testid="column"]:nth-of-type(3) div[data-testid="stMetric"]::before {{
+            background:{STATUS_WARN_BG}; color:{STATUS_WARN}; content:'↗'; }}
+        div[data-testid="stMetricValue"] {{ font-size:30px; }}
+        .panel-title {{ display:flex; align-items:center; justify-content:space-between;
+            font-size:15px; font-weight:750; color:{INK}; margin:0 0 4px; }}
+        .panel-card {{ background:#FFFFFF; border:1px solid {HAIRLINE}; border-radius:{RADIUS};
+            box-shadow:{SHADOW_SOFT}; padding:16px 18px; }}
+        div[data-testid="stPlotlyChart"] {{ background:#FFFFFF; border:1px solid {HAIRLINE};
+            border-radius:{RADIUS}; box-shadow:{SHADOW_SOFT}; overflow:hidden; }}
+        .overview-table-wrap {{ background:#FFFFFF; border:1px solid {HAIRLINE};
+            border-radius:{RADIUS}; box-shadow:{SHADOW_SOFT}; padding:15px 17px; }}
+        .overview-table th {{ text-align:left; padding:9px 6px; color:{INK_MUTED};
+            font-size:10px; letter-spacing:.55px; text-transform:uppercase; }}
+        .risk-badge {{ display:inline-block; min-width:46px; padding:4px 8px; border-radius:7px;
+            color:#FFFFFF; text-align:center; font-weight:750; }}
+        .alerts-rail {{ border-left:0; padding-left:0; }}
+        .alert-card {{ border:0; border-left:0; padding:13px 14px; margin-bottom:10px; }}
+        .alert-card.is-critical {{ background:{STATUS_CRIT_BG}; }}
+        .alert-card.is-warning {{ background:{STATUS_WARN_BG}; }}
+        .alerts-count {{ display:inline-grid; place-items:center; min-width:22px; height:22px;
+            margin-left:6px; padding:0 6px; border-radius:999px; color:#FFFFFF;
+            background:{STATUS_CRIT}; font-size:11px; }}
+        @media (max-width: 1180px) {{
+            section[data-testid="stSidebar"] {{ width: 220px !important; }}
+            .stApp [data-testid="stMainBlockContainer"] {{ padding-left:1rem; padding-right:1rem; }}
+        }}
+        @media (max-width: 760px) {{
+            .dashboard-header {{ align-items:flex-start; flex-direction:column; }}
+            .dashboard-filters {{ width:100%; }}
+            .filter-pill {{ flex:1 1 170px; }}
+            div[data-testid="stMetric"] {{ min-height:100px; }}
+        }}
         </style>
         """,
-        unsafe_allow_html=True,
     )
 
 
@@ -1418,6 +1496,37 @@ def fig_fund_risk(results: list[DiagnosisResult]) -> go.Figure:
     return fig
 
 
+def fig_risk_overview(results: list[DiagnosisResult]) -> go.Figure:
+    """Two-line current-fund profile; it deliberately does not pretend to be history."""
+    ordered = sorted(results, key=lambda item: item.integrated_risk, reverse=True)
+    risks = [item.integrated_risk for item in ordered]
+    running_average = [sum(risks[:index]) / index for index in range(1, len(risks) + 1)]
+    labels = [item.well for item in ordered]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=labels, y=running_average, mode="lines+markers",
+        name="Средний риск выбранного фонда", line=dict(color=GREEN_700, width=2.5),
+        marker=dict(size=5), hovertemplate="%{x}<br>Средний риск: %{y:.2f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=labels, y=risks, mode="lines+markers", name="Риск скважины",
+        line=dict(color=STATUS_HIGH, width=2.2), marker=dict(size=5),
+        hovertemplate="%{x}<br>Риск: %{y:.2f}<extra></extra>",
+    ))
+    fig.add_hrect(y0=RISK_CRIT, y1=1.0, fillcolor=STATUS_CRIT_BG, opacity=.55,
+                  line_width=0, layer="below")
+    fig.update_layout(
+        height=300, paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+        font=dict(family=FONT_FAMILY, color=INK), hovermode="x unified",
+        legend=dict(orientation="h", y=-.24, x=0, bgcolor="rgba(0,0,0,0)"),
+        margin=dict(l=12, r=12, t=18, b=60),
+        xaxis=dict(title="", showgrid=False, tickangle=-25),
+        yaxis=dict(title="Риск, 0–1", range=[0, 1], dtick=.2,
+                   gridcolor=HAIRLINE, zeroline=False),
+    )
+    return fig
+
+
 def fig_mechanism_mix(results: list[DiagnosisResult]) -> go.Figure:
     """Dominant-mechanism structure for the current fund, without inferred history."""
     counts = {mechanism: 0 for mechanism in MECH_RU}
@@ -1495,20 +1604,20 @@ def fig_severity(detail: DiagnosisResult) -> go.Figure:
 
 
 def render_header() -> None:
-    st.markdown(
+    """Reference-inspired page header without inventing dates or field metadata."""
+    st.html(
         """
-        <div class="app-header">
-            <div class="app-header-text">
-                <div class="app-title">ГАЛИТ</div>
-                <div class="app-subtitle">
-                    Интегрированная диагностика осложнений: галит · кальцит · АСПО ·
-                    коррозия. Ранжирование фонда и профили T(z), P(z).
-                </div>
+        <div class="dashboard-header">
+            <div>
+                <div class="dashboard-title">ГАЛИТ</div>
+                <div class="dashboard-subtitle">Диагностика осложнений и приоритеты обслуживания</div>
+            </div>
+            <div class="dashboard-filters" aria-label="Контекст текущего расчёта">
+                <div class="filter-pill"><span class="filter-icon">▣</span>Текущий расчёт <span>⌄</span></div>
+                <div class="filter-pill"><span class="filter-icon">▽</span>Все месторождения <span>⌄</span></div>
             </div>
         </div>
-        <hr class="app-rule">
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -1559,21 +1668,6 @@ def render_sidebar():
                 f'<img class="sidebar-logo" src="{logo_uri}" alt="Логотип ГАЛИТ">',
                 unsafe_allow_html=True,
             )
-        st.divider()
-        st.markdown(
-            """
-            <div class="sidebar-nav-title">Рабочие разделы</div>
-            <nav class="sidebar-nav" aria-label="Навигация по разделам">
-                <div class="sidebar-nav-item"><span class="sidebar-nav-index">01</span>Обзор фонда</div>
-                <div class="sidebar-nav-item"><span class="sidebar-nav-index">02</span>План мастера</div>
-                <div class="sidebar-nav-item"><span class="sidebar-nav-index">03</span>Ранжирование фонда</div>
-                <div class="sidebar-nav-item"><span class="sidebar-nav-index">04</span>Профили T(z) · P(z)</div>
-                <div class="sidebar-nav-item"><span class="sidebar-nav-index">05</span>Детально по скважине</div>
-                <div class="sidebar-nav-item"><span class="sidebar-nav-index">06</span>Прогноз и пилот</div>
-            </nav>
-            """,
-            unsafe_allow_html=True,
-        )
         st.divider()
 
         upload = st.file_uploader(
@@ -2069,57 +2163,61 @@ def main() -> None:
     kpi4.metric("Средний риск фонда", f"{sum(risks) / len(risks):.2f}",
                 help=f"Чаще всего лидирует: {dominant_counts.index[0]}")
 
-    # --- overview shell: current snapshot only, no invented history/timestamps ---
-    st.markdown(
-        '<div class="shell-eyebrow">Оперативная картина</div>'
-        '<div class="shell-heading">Обзор фонда</div>'
-        '<div class="shell-copy">Риски, структура осложнений и текущие сигналы '
-        'по загруженному расчёту.</div>',
-        unsafe_allow_html=True,
-    )
-    overview_main, overview_alerts_col = st.columns([3, 1], gap="large")
+    # --- reference dashboard: center analytics plus a dedicated right alerts rail ---
+    overview_main, overview_alerts_col = st.columns([3.35, 1], gap="large")
     with overview_main:
-        risk_col, mix_col = st.columns([3, 2])
-        with risk_col:
-            st.markdown('<span class="section-title">Риск по скважинам</span>',
-                        unsafe_allow_html=True)
-            st.plotly_chart(fig_fund_risk(results), width="stretch",
-                            config={"displaylogo": False, "displayModeBar": False})
+        st.markdown('<div class="panel-title">Динамика риска по текущему фонду '
+                    '<span class="status-chip is-ok">текущий срез</span></div>',
+                    unsafe_allow_html=True)
+        st.plotly_chart(fig_risk_overview(results), width="stretch",
+                        config={"displaylogo": False, "displayModeBar": False})
+        table_col, mix_col = st.columns([3, 2], gap="large")
+        with table_col:
+            top_rows = "".join(
+                '<tr>'
+                f'<td>{html.escape(item.well)}</td>'
+                f'<td>{MECH_RU.get(item.dominant, item.dominant)}</td>'
+                f'<td><span class="risk-badge" style="background:{risk_status(item.integrated_risk)[1]}">'
+                f'{item.integrated_risk:.2f}</span></td>'
+                f'<td>{item.quality.grade}</td>'
+                '</tr>'
+                for item in sorted(results, key=lambda row: row.integrated_risk, reverse=True)[:5]
+            )
+            st.markdown(
+                '<div class="overview-table-wrap"><div class="panel-title">Топ скважин по риску</div>'
+                '<table class="overview-table"><thead><tr><th>Скважина</th>'
+                '<th>Ключевое осложнение</th><th>Риск</th><th>Качество</th></tr></thead>'
+                f'<tbody>{top_rows}</tbody></table>'
+                '<div class="shell-copy" style="color:#0F6B43;margin:12px 0 0">'
+                'Полный список — во вкладке «Ранжирование фонда» →</div></div>',
+                unsafe_allow_html=True,
+            )
         with mix_col:
-            st.markdown('<span class="section-title">Структура осложнений</span>',
+            st.markdown('<div class="panel-title">Структура осложнений</div>',
                         unsafe_allow_html=True)
             st.plotly_chart(fig_mechanism_mix(results), width="stretch",
                             config={"displaylogo": False, "displayModeBar": False})
-        st.markdown('<span class="section-title">Скважины с наибольшим риском</span>',
-                    unsafe_allow_html=True)
-        top_rows = "".join(
-            f'<tr><td>{item.well}</td><td>{MECH_RU.get(item.dominant, item.dominant)}</td>'
-            f'<td>{item.integrated_risk:.2f}</td></tr>'
-            for item in sorted(results, key=lambda row: row.integrated_risk, reverse=True)[:5]
-        )
+    with overview_alerts_col:
+        alerts = overview_alerts(results)
         st.markdown(
-            '<table class="overview-table"><thead><tr><th>Скважина</th>'
-            '<th>Лидер</th><th>Риск</th></tr></thead><tbody>' + top_rows + '</tbody></table>',
+            '<div class="alerts-rail"><div class="panel-title">Критические оповещения'
+            f'<span class="alerts-count">{sum(a["level"] == "critical" for a in alerts)}</span>'
+            '</div><div class="shell-copy">Текущие сигналы без вымышленных дат</div></div>',
             unsafe_allow_html=True,
         )
-    with overview_alerts_col:
-        st.markdown('<div class="alerts-rail"><div class="shell-eyebrow">Сигналы</div>'
-                    '<div class="shell-heading">Alerts</div></div>', unsafe_allow_html=True)
-        alerts = overview_alerts(results)
         if not alerts:
             st.markdown(
-                '<div class="alert-card is-ok"><div class="alert-card-title">'
-                'Активных сигналов нет</div><div class="alert-card-meta">'
-                'В текущем расчёте нет скважин выше порога повышенного риска.</div></div>',
+                '<div class="alert-card is-ok"><div class="alert-card-title">Активных сигналов нет</div>'
+                '<div class="alert-card-meta">Все скважины ниже порога повышенного риска.</div></div>',
                 unsafe_allow_html=True,
             )
         else:
             for alert in alerts[:6]:
                 st.markdown(
                     f'<div class="alert-card is-{alert["level"]}">'
-                    f'<div class="alert-card-title">{alert["well"]}</div>'
-                    f'<div class="alert-card-meta">{alert["title"]}<br>{alert["quality"]}</div>'
-                    '</div>', unsafe_allow_html=True,
+                    f'<div class="alert-card-title">◉ {html.escape(alert["well"])}</div>'
+                    f'<div class="alert-card-meta">{html.escape(alert["title"])}<br>'
+                    f'{html.escape(alert["quality"])}</div></div>', unsafe_allow_html=True,
                 )
         if len(alerts) > 6:
             st.caption(f"Ещё сигналов: {len(alerts) - 6}. Полный список — в ранжировании.")
