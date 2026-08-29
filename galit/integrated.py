@@ -298,7 +298,13 @@ class WellCase:
     inhibitor_efficiency: float = 0.0
     lift_type: str = "ЭЦН"          # ЭЦН | ШГН | фонтан
     p_wellhead_pa: float = 1.2e6
+    # Keep provenance in its legacy positional slot. Location metadata is
+    # deliberately appended so older positional WellCase calls remain valid.
     provenance: DataProvenance = field(default_factory=DataProvenance)
+    latitude: float | None = None
+    longitude: float | None = None
+    cluster: str | None = None
+    site: str | None = None
 
 
 @dataclass

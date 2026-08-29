@@ -204,6 +204,10 @@ class WellCaseIn(BaseModel):
     p_wellhead_pa: float = Field(
         default=1.2e6, gt=0.0, description="Буферное давление, Па",
     )
+    latitude: float | None = Field(default=None, ge=-90, le=90, description="Широта WGS84")
+    longitude: float | None = Field(default=None, ge=-180, le=180, description="Долгота WGS84")
+    cluster: str | None = Field(default=None, max_length=200, description="Куст")
+    site: str | None = Field(default=None, max_length=200, description="Участок или месторождение")
 
 
 class ForecastSnapshotIn(BaseModel):
@@ -605,6 +609,8 @@ def _to_well_case(payload: WellCaseIn) -> WellCase:
         inhibitor_efficiency=payload.inhibitor_efficiency,
         lift_type=payload.lift_type,
         p_wellhead_pa=payload.p_wellhead_pa,
+        latitude=payload.latitude, longitude=payload.longitude,
+        cluster=payload.cluster, site=payload.site,
         provenance=DataProvenance(sources=sources),
     )
 
@@ -1259,6 +1265,10 @@ async def master_plan(
         "plan_date": plan.plan_date,
         "summary": asdict(plan.summary),
         "tasks": tasks,
+        "map": {
+            "summary": asdict(galit.prepare_field_map(diagnosed).summary),
+            "points": [asdict(point) for point in galit.prepare_field_map(diagnosed).points],
+        },
         "errors": errors,
         "loss_methodology": loss_methodology,
         "advisory_notice": plan.advisory_notice,

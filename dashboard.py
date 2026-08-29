@@ -90,7 +90,9 @@ RISK_CRIT = 0.60   # выше -- критический
 
 # Нейтральная основа поверхностей: почти белый лист, как на референсе.
 CANVAS = "#FFFFFF"          # плоскость карточек
-HAIRLINE = "#E7EBE8"        # тонкая линия вместо рамок и сеток
+HAIRLINE = "#E7EBE8"        # legacy palette value for non-CSS compatibility
+HAIRLINE_SOFT = "rgba(31, 36, 34, 0.06)"
+HAIRLINE_FAINT = "rgba(31, 36, 34, 0.04)"
 SHADOW_SOFT = "0 1px 2px rgba(16, 40, 30, 0.04), 0 8px 24px rgba(16, 40, 30, 0.07)"
 SHADOW_RAISED = "0 2px 4px rgba(16, 40, 30, 0.05), 0 14px 34px rgba(16, 40, 30, 0.10)"
 RADIUS = "14px"             # крупный радиус скругления с макета
@@ -105,22 +107,100 @@ MECH_RU = {
     "corrosion": "Коррозия",
 }
 
-FONT_FAMILY = "Segoe UI, Helvetica Neue, Arial, sans-serif"
+FONT_FAMILY = "Outfit, Manrope, Segoe UI, Arial, sans-serif"
+WEIGHT_REGULAR = 400
+WEIGHT_MEDIUM = 500
+WEIGHT_SEMIBOLD = 600
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-BACKGROUND_ASSET = PROJECT_ROOT / "assets" / "dashboard-background.png"
-HEADER_LOGO_ASSET = PROJECT_ROOT / "assets" / "header-logo.png"
+ASSETS_DIR = PROJECT_ROOT / "assets"
+BACKGROUND_ASSET = ASSETS_DIR / "dashboard-background.png"
+HEADER_LOGO_ASSET = ASSETS_DIR / "header-logo.png"
+FONT_DIR = ASSETS_DIR / "fonts"
+ICON_DIR = ASSETS_DIR / "icons"
+FAVICON_ASSET = ICON_DIR / "brand-favicon.svg"
+FONT_FACES = (
+    ("Outfit", "outfit-latin-ext-wght-normal.woff2", "U+0100-02FF, U+1E00-1EFF, U+2000-206F"),
+    ("Outfit", "outfit-latin-wght-normal.woff2", "U+0000-00FF"),
+    ("Manrope", "manrope-cyrillic-ext-wght-normal.woff2", "U+0400-052F, U+2DE0-2DFF, U+A640-A69F"),
+    ("Manrope", "manrope-cyrillic-wght-normal.woff2", "U+0400-04FF"),
+)
 
 
-def local_image_data_uri(path: Path) -> str:
-    """Return a data URI for a local image, independent of the process CWD."""
-    mime_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+def local_asset_data_uri(path: Path) -> str:
+    """Return a data URI for a repository-local UI asset."""
+    mime_types = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".svg": "image/svg+xml", ".woff2": "font/woff2",
+    }
     try:
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     except OSError:
         return ""
     mime_type = mime_types.get(path.suffix.lower(), "application/octet-stream")
     return f"data:{mime_type};base64,{encoded}"
+
+
+def local_image_data_uri(path: Path) -> str:
+    """Backward-compatible image asset helper."""
+    return local_asset_data_uri(path)
+
+
+def font_face_css(font_dir: Path = FONT_DIR) -> str:
+    """Build local variable-font declarations for the supported unicode ranges."""
+    declarations: list[str] = []
+    for family, file_name, unicode_range in FONT_FACES:
+        uri = local_asset_data_uri(font_dir / file_name)
+        if not uri:
+            return ""
+        declarations.append(
+            "@font-face{"
+            f"font-family:'{family}';src:url('{uri}') format('woff2');"
+            "font-style:normal;font-weight:200 700;font-display:swap;"
+            f"unicode-range:{unicode_range}"
+            "}"
+        )
+    return "\n".join(declarations)
+
+
+def lucide_icon(name: str, size: int = 17) -> str:
+    """Return sanitized inline markup from a vendored Lucide icon."""
+    try:
+        markup = (ICON_DIR / f"{name}.svg").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    markup = markup[markup.find("<svg"):].strip()
+    if not markup:
+        return ""
+    markup = markup.replace(
+        f'class="lucide lucide-{name}"',
+        f'class="gx-icon lucide lucide-{name}"',
+        1,
+    )
+    markup = markup.replace('width="24"', f'width="{size}"', 1)
+    markup = markup.replace('height="24"', f'height="{size}"', 1)
+    markup = markup.replace(
+        f'width="{size}"\n  height="{size}"',
+        f'width="{size}" height="{size}"',
+        1,
+    )
+    return markup.replace("<svg", '<svg aria-hidden="true"', 1)
+
+
+def icon_span(name: str, size: int = 17) -> str:
+    """Wrap a Lucide icon for consistent inline alignment."""
+    icon = lucide_icon(name, size)
+    return f'<span class="gx-icon-wrap">{icon}</span>' if icon else ""
+
+
+def lucide_data_uri(name: str, stroke: str = "currentColor") -> str:
+    """Return a recolored vendored Lucide icon as an SVG data URI."""
+    markup = lucide_icon(name)
+    if not markup:
+        return ""
+    markup = markup.replace('stroke="currentColor"', f'stroke="{stroke}"')
+    encoded = base64.b64encode(markup.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
 
 
 def background_data_uri(path: Path = BACKGROUND_ASSET) -> str:
@@ -161,11 +241,16 @@ OPTIONAL_DEFAULTS: dict[str, float | str] = {
     "lift_type": "ЭЦН",
 }
 
+LOCATION_COLUMNS = ("latitude", "longitude", "cluster", "site")
+
 # Синонимы заголовков (нормализуются: нижний регистр, без пробелов)
 HEADER_ALIASES = {
     "name": "name", "well": "name", "well_name": "name",
     "скважина": "name", "название": "name",
     "lift": "lift_type", "способ": "lift_type", "тип насоса": "lift_type",
+    "широта": "latitude", "lat": "latitude",
+    "долгота": "longitude", "lon": "longitude", "lng": "longitude",
+    "куст": "cluster", "участок": "site", "площадка": "site",
 }
 
 # Типовой солевой состав пластовой воды Припятского прогиба (мг/л).
@@ -178,6 +263,10 @@ TYPICAL_BRINE: dict[str, float] = {
 
 COLUMN_DOCS = [
     ("name", "—", "Название скважины", "да", "—"),
+    ("latitude", "град", "Широта WGS84 для карты", "нет", "—"),
+    ("longitude", "град", "Долгота WGS84 для карты", "нет", "—"),
+    ("cluster", "—", "Куст скважины", "нет", "—"),
+    ("site", "—", "Участок / месторождение", "нет", "—"),
     ("depth_m", "м", "Глубина по стволу до забоя", "да", "—"),
     ("tubing_id_m", "м", "Внутренний диаметр НКТ", "да", "—"),
     ("inclination_deg", "град", "Средний угол от вертикали", "нет", "0"),
@@ -209,24 +298,29 @@ COLUMN_DOCS = [
 
 st.set_page_config(
     page_title="ГАЛИТ — диагностика осложнений",
-    page_icon="🛢️",
+    page_icon=FAVICON_ASSET,
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
 def inject_css() -> None:
-    """Apply the corporate theme over a repository-local image background."""
+    """Apply the corporate theme with local fonts and repository assets."""
     background_uri = background_data_uri()
     background_layer = (
         f"url('{background_uri}') center / cover fixed no-repeat"
         if background_uri else "linear-gradient(135deg, #DCE9E2, #F6F8F7)"
     )
+    fonts_css = font_face_css()
+    kpi_default_icon = lucide_data_uri("gauge", GREEN_700)
+    kpi_critical_icon = lucide_data_uri("triangle-alert", STATUS_CRIT)
+    kpi_trend_icon = lucide_data_uri("trending-up", STATUS_WARN)
     st.html(
         f"""
         <style>
+        {fonts_css}
         /* ---------- базовая типографика ---------- */
-        .stApp {{
+        .stApp, .stApp button, .stApp input, .stApp textarea, .stApp select {{
             font-family: {FONT_FAMILY};
             color: {INK};
             /* Референс — почти белый лист: фото остаётся текстурой подложки,
@@ -251,7 +345,7 @@ def inject_css() -> None:
             padding-left: clamp(1rem, 3vw, 3rem);
             padding-right: clamp(1rem, 3vw, 3rem);
         }}
-        p, li, span, label {{ color: {INK}; }}
+        p, li, span, label {{ color: {INK}; font-weight: {WEIGHT_REGULAR}; }}
         h1, h2, h3 {{
             color: {INK};
             letter-spacing: -0.2px;
@@ -274,7 +368,7 @@ def inject_css() -> None:
             align-items: center;
             min-height: 88px;
             background: {CANVAS};
-            border: 1px solid {HAIRLINE};
+            border: 0;
             border-radius: {RADIUS};
             box-shadow: {SHADOW_SOFT};
             padding: 18px 24px;
@@ -287,7 +381,7 @@ def inject_css() -> None:
             min-width: 0;
         }}
         .app-title {{
-            font-size: 30px; font-weight: 750; color: {GREEN_900};
+            font-size: 30px; font-weight: {WEIGHT_SEMIBOLD}; color: {GREEN_900};
             letter-spacing: -0.4px; line-height: 1.15;
         }}
         .app-subtitle {{
@@ -303,7 +397,7 @@ def inject_css() -> None:
         /* ---------- боковая панель ---------- */
         section[data-testid="stSidebar"] {{
             background: rgba(255, 255, 255, 0.94);
-            border-right: 1px solid {HAIRLINE};
+            border-right: 1px solid {HAIRLINE_SOFT};
             box-shadow: none;
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
@@ -363,7 +457,7 @@ def inject_css() -> None:
         section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
         section[data-testid="stSidebar"] [data-testid="stFileUploader"] label,
         section[data-testid="stSidebar"] [data-testid="stFileUploader"] label p {{
-            color: {INK} !important; font-weight: 650;
+            color: {INK} !important; font-weight: {WEIGHT_MEDIUM};
         }}
         section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {{
             background: {SURFACE}; border: 1px dashed {GREEN_700};
@@ -377,7 +471,7 @@ def inject_css() -> None:
         }}
         section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {{
             background: #FFFFFF; color: {GREEN_900}; border: 1px solid {GREEN_700};
-            font-weight: 650;
+            font-weight: {WEIGHT_MEDIUM};
         }}
         div[data-baseweb="select"] > div,
         div[data-baseweb="input"] > div,
@@ -403,7 +497,7 @@ def inject_css() -> None:
         /* ---------- кнопки ---------- */
         .stButton > button {{
             background: {GREEN_700}; color: #FFFFFF; border: none;
-            border-radius: 10px; font-weight: 650; font-size: 14px;
+            border-radius: 10px; font-weight: {WEIGHT_MEDIUM}; font-size: 14px;
             padding: 9px 18px; width: 100%;
             box-shadow: 0 1px 2px rgba(16, 40, 30, 0.10);
             transition: background 0.15s ease, transform 0.15s ease;
@@ -417,7 +511,7 @@ def inject_css() -> None:
         .stDownloadButton > button {{
             background: #FFFFFF; color: {GREEN_700};
             border: 1px solid {GREEN_700}; border-radius: 10px;
-            font-weight: 650; font-size: 14px; padding: 8px 18px; width: 100%;
+            font-weight: {WEIGHT_MEDIUM}; font-size: 14px; padding: 8px 18px; width: 100%;
         }}
         .stDownloadButton > button:hover {{
             background: {GREEN_100}; color: {GREEN_900};
@@ -428,13 +522,13 @@ def inject_css() -> None:
         div[data-testid="stTabs"] [data-baseweb="tab-list"] {{
             gap: 6px;
             background: {SURFACE};
-            border: 1px solid {HAIRLINE};
+            border: 0;
             border-radius: 12px;
             padding: 6px;
         }}
         div[data-testid="stTabs"] button[data-baseweb="tab"] {{
             background: transparent; color: {INK_MUTED};
-            font-weight: 650; font-size: 14px;
+            font-weight: {WEIGHT_MEDIUM}; font-size: 14px;
             border-radius: 9px; padding: 8px 18px; border-bottom: none;
         }}
         div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {{
@@ -448,7 +542,7 @@ def inject_css() -> None:
         /* ---------- карточки-метрики ---------- */
         div[data-testid="stMetric"] {{
             background: {CANVAS};
-            border: 1px solid {HAIRLINE};
+            border: 0;
             border-radius: {RADIUS}; padding: 18px 20px 14px 20px;
             box-shadow: {SHADOW_SOFT};
             transition: box-shadow 0.18s ease, transform 0.18s ease;
@@ -458,18 +552,18 @@ def inject_css() -> None:
             transform: translateY(-1px);
         }}
         div[data-testid="stMetricLabel"] p {{
-            color: {INK_MUTED}; font-size: 11px; font-weight: 700;
+            color: {INK_MUTED}; font-size: 11px; font-weight: {WEIGHT_SEMIBOLD};
             text-transform: uppercase; letter-spacing: 0.8px;
             margin-bottom: 6px;
         }}
         div[data-testid="stMetricValue"] {{
-            color: {INK}; font-weight: 750; letter-spacing: -0.6px;
+            color: {INK}; font-weight: {WEIGHT_SEMIBOLD}; letter-spacing: -0.6px;
         }}
 
         /* ---------- таблицы, canvas-grid и графики ---------- */
         div[data-testid="stDataFrame"] {{
             background: {CANVAS}; color: {INK};
-            border: 1px solid {HAIRLINE}; border-radius: {RADIUS};
+            border: 0; border-radius: {RADIUS};
             box-shadow: {SHADOW_SOFT};
             overflow: hidden;
         }}
@@ -485,10 +579,10 @@ def inject_css() -> None:
         div[data-testid="stDataFrame"] canvas {{ background: #FFFFFF; }}
         /* Референс без внутренней сетки: только горизонтальные волосяные линии. */
         table {{ border-collapse: collapse; }}
-        table, th, td {{ color: {INK}; border-color: {HAIRLINE}; }}
+        table, th, td {{ color: {INK}; border-color: {HAIRLINE_FAINT}; }}
         td {{ border-left: none; border-right: none; }}
         th {{
-            background: {SURFACE}; font-weight: 700;
+            background: {SURFACE}; font-weight: {WEIGHT_SEMIBOLD};
             border-left: none; border-right: none;
             font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px;
             color: {INK_MUTED};
@@ -504,7 +598,7 @@ def inject_css() -> None:
         /* ---------- информационные блоки ---------- */
         .note-box {{
             background: {CANVAS};
-            border: 1px solid {HAIRLINE};
+            border: 0;
             border-left: 4px solid {GREEN_700};
             border-radius: {RADIUS}; padding: 16px 20px; font-size: 14px;
             box-shadow: {SHADOW_SOFT};
@@ -518,7 +612,7 @@ def inject_css() -> None:
             border-radius: 3px; margin-right: 7px; vertical-align: -1px;
         }}
         .section-title {{
-            font-size: 17px; font-weight: 750; color: {INK};
+            font-size: 17px; font-weight: {WEIGHT_SEMIBOLD}; color: {INK};
             letter-spacing: -0.2px; margin: 6px 0 12px 0;
         }}
 
@@ -526,8 +620,8 @@ def inject_css() -> None:
         .status-chip {{
             display: inline-flex; align-items: center; gap: 6px;
             padding: 4px 12px; border-radius: 999px;
-            font-size: 12px; font-weight: 700; letter-spacing: 0.2px;
-            border: 1px solid transparent;
+            font-size: 12px; font-weight: {WEIGHT_SEMIBOLD}; letter-spacing: 0.2px;
+            border: 0;
         }}
         .status-chip.is-ok {{ background: {STATUS_OK_BG}; color: {STATUS_OK}; }}
         .status-chip.is-warn {{ background: {STATUS_WARN_BG}; color: {STATUS_WARN}; }}
@@ -537,7 +631,7 @@ def inject_css() -> None:
         /* Мягкая карточка-контейнер для блоков плана и прогноза. */
         .surface-card {{
             background: {CANVAS};
-            border: 1px solid {HAIRLINE};
+            border: 0;
             border-radius: {RADIUS};
             box-shadow: {SHADOW_SOFT};
             padding: 18px 20px;
@@ -545,37 +639,37 @@ def inject_css() -> None:
 
         /* ---------- shell: navigation / overview / alerts ---------- */
         .shell-eyebrow {{
-            color: {GREEN_700}; font-size: 11px; font-weight: 800;
+            color: {GREEN_700}; font-size: 11px; font-weight: {WEIGHT_SEMIBOLD};
             letter-spacing: 1.2px; text-transform: uppercase;
             margin: 0 0 5px 0;
         }}
         .shell-heading {{
-            color: {INK}; font-size: 22px; font-weight: 760;
+            color: {INK}; font-size: 22px; font-weight: {WEIGHT_SEMIBOLD};
             letter-spacing: -0.35px; margin: 0 0 4px 0;
         }}
         .shell-copy {{ color: {INK_MUTED}; font-size: 13px; margin-bottom: 14px; }}
         .sidebar-nav-title {{
-            color: {INK_MUTED}; font-size: 10px; font-weight: 800;
+            color: {INK_MUTED}; font-size: 10px; font-weight: {WEIGHT_SEMIBOLD};
             letter-spacing: 1.1px; text-transform: uppercase; margin: 4px 0 8px;
         }}
         .sidebar-nav {{ display: grid; gap: 3px; margin: 0 0 14px; }}
         .sidebar-nav-item {{
             display: flex; align-items: center; gap: 9px;
             min-height: 34px; padding: 7px 9px; border-radius: 9px;
-            color: {INK_MUTED}; font-size: 12px; font-weight: 650;
+            color: {INK_MUTED}; font-size: 12px; font-weight: {WEIGHT_MEDIUM};
         }}
         .sidebar-nav-item:first-child {{ background: {GREEN_100}; color: {GREEN_900}; }}
         .sidebar-nav-index {{
             display: inline-grid; place-items: center; width: 20px; height: 20px;
             border-radius: 6px; background: #FFFFFF; color: {GREEN_700};
-            font-size: 10px; font-weight: 800;
+            font-size: 10px; font-weight: {WEIGHT_SEMIBOLD};
         }}
         .alerts-rail {{
-            border-left: 1px solid {HAIRLINE}; padding-left: 14px;
+            border-left: 1px solid {HAIRLINE_SOFT}; padding-left: 14px;
             min-height: 100%;
         }}
         .alert-card {{
-            background: {CANVAS}; border: 1px solid {HAIRLINE};
+            background: {CANVAS}; border: 0;
             border-left: 3px solid var(--alert-accent, {STATUS_WARN});
             border-radius: 11px; padding: 11px 12px; margin-bottom: 9px;
             box-shadow: {SHADOW_SOFT}; overflow-wrap: anywhere;
@@ -583,14 +677,14 @@ def inject_css() -> None:
         .alert-card.is-critical {{ --alert-accent: {STATUS_CRIT}; }}
         .alert-card.is-warning {{ --alert-accent: {STATUS_WARN}; }}
         .alert-card.is-ok {{ --alert-accent: {STATUS_OK}; }}
-        .alert-card-title {{ color: {INK}; font-size: 13px; font-weight: 750; }}
+        .alert-card-title {{ color: {INK}; font-size: 13px; font-weight: {WEIGHT_SEMIBOLD}; }}
         .alert-card-meta {{ color: {INK_MUTED}; font-size: 11px; margin-top: 3px; }}
         .overview-table {{ width: 100%; font-size: 12px; }}
-        .overview-table td {{ padding: 8px 6px; border-bottom: 1px solid {HAIRLINE}; }}
-        .overview-table td:last-child {{ text-align: right; font-weight: 750; }}
+        .overview-table td {{ padding: 8px 6px; border-bottom: 1px solid {HAIRLINE_FAINT}; }}
+        .overview-table td:last-child {{ text-align: right; font-weight: {WEIGHT_SEMIBOLD}; }}
 
         @media (max-width: 1100px) {{
-            .alerts-rail {{ border-left: 0; border-top: 1px solid {HAIRLINE};
+            .alerts-rail {{ border-left: 0; border-top: 1px solid {HAIRLINE_SOFT};
                             padding: 14px 0 0; margin-top: 8px; }}
             .app-title {{ font-size: 26px; }}
         }}
@@ -633,46 +727,49 @@ def inject_css() -> None:
         }}
         .sidebar-nav {{ gap: 5px; }}
         .sidebar-nav-item {{ min-height: 42px; padding: 9px 11px; border-radius: 10px;
-            font-size: 13px; font-weight: 600; }}
+            font-size: 13px; font-weight: {WEIGHT_SEMIBOLD}; }}
         .sidebar-nav-item:first-child {{ background: #EAF6EF; color: {GREEN_700}; }}
         .sidebar-nav-index {{ width: 23px; height: 23px; border-radius: 7px;
-            background: transparent; color: inherit; font-size: 0; }}
-        .sidebar-nav-index::before {{ font-size: 15px; content: '◌'; }}
-        .sidebar-nav-item:first-child .sidebar-nav-index::before {{ content: '▦'; }}
+            background: transparent; color: inherit; }}
+        .ui-icon {{ display:inline-block; width:17px; height:17px; flex:0 0 auto;
+            object-fit:contain; vertical-align:-3px; }}
+        .sidebar-nav-index .ui-icon {{ width:18px; height:18px; }}
+        .filter-pill .ui-icon:last-child {{ width:14px; height:14px; margin-left:2px; opacity:.72; }}
+        .alert-card-title .ui-icon {{ width:15px; height:15px; margin-right:6px; }}
         .dashboard-header {{ display:flex; align-items:flex-end; justify-content:space-between;
             gap:18px; margin: 2px 0 18px; }}
-        .dashboard-title {{ font-size: 28px; line-height:1.1; font-weight: 780;
+        .dashboard-title {{ font-size: 28px; line-height:1.1; font-weight: {WEIGHT_SEMIBOLD};
             letter-spacing:-.55px; color:{GREEN_700}; }}
         .dashboard-subtitle {{ margin-top:6px; color:{INK_MUTED}; font-size:13px; }}
         .dashboard-filters {{ display:flex; align-items:center; gap:9px; flex-wrap:wrap; }}
         .filter-pill {{ display:inline-flex; align-items:center; gap:8px; min-height:40px;
-            padding:8px 13px; border:1px solid {HAIRLINE}; border-radius:10px;
-            background:#FFFFFF; color:{INK}; font-size:12px; font-weight:650;
+            padding:8px 13px; border:0; border-radius:10px;
+            background:#FFFFFF; color:{INK}; font-size:12px; font-weight:{WEIGHT_MEDIUM};
             box-shadow:{SHADOW_SOFT}; }}
         .filter-pill .filter-icon {{ color:{GREEN_700}; font-size:14px; }}
         div[data-testid="stMetric"] {{ min-height: 118px; padding:18px 18px 14px 62px;
             position:relative; border:0; }}
         div[data-testid="stMetric"]::before {{ position:absolute; left:18px; top:20px;
-            display:grid; place-items:center; width:32px; height:32px; border-radius:9px;
-            background:{STATUS_OK_BG}; color:{STATUS_OK}; content:'◆'; font-size:13px; }}
+            width:32px; height:32px; border-radius:9px; content:'';
+            background: {STATUS_OK_BG} url('{kpi_default_icon}') center / 17px 17px no-repeat; }}
         div[data-testid="column"]:nth-of-type(2) div[data-testid="stMetric"] {{ background:{STATUS_CRIT_BG}; }}
         div[data-testid="column"]:nth-of-type(2) div[data-testid="stMetric"]::before {{
-            background:#FFFFFF; color:{STATUS_CRIT}; content:'!'; font-weight:900; }}
+            background: #FFFFFF url('{kpi_critical_icon}') center / 17px 17px no-repeat; }}
         div[data-testid="column"]:nth-of-type(3) div[data-testid="stMetric"]::before {{
-            background:{STATUS_WARN_BG}; color:{STATUS_WARN}; content:'↗'; }}
+            background: {STATUS_WARN_BG} url('{kpi_trend_icon}') center / 17px 17px no-repeat; }}
         div[data-testid="stMetricValue"] {{ font-size:30px; }}
         .panel-title {{ display:flex; align-items:center; justify-content:space-between;
-            font-size:15px; font-weight:750; color:{INK}; margin:0 0 4px; }}
-        .panel-card {{ background:#FFFFFF; border:1px solid {HAIRLINE}; border-radius:{RADIUS};
+            font-size:15px; font-weight:{WEIGHT_SEMIBOLD}; color:{INK}; margin:0 0 4px; }}
+        .panel-card {{ background:#FFFFFF; border:0; border-radius:{RADIUS};
             box-shadow:{SHADOW_SOFT}; padding:16px 18px; }}
-        div[data-testid="stPlotlyChart"] {{ background:#FFFFFF; border:1px solid {HAIRLINE};
+        div[data-testid="stPlotlyChart"] {{ background:#FFFFFF; border:0;
             border-radius:{RADIUS}; box-shadow:{SHADOW_SOFT}; overflow:hidden; }}
-        .overview-table-wrap {{ background:#FFFFFF; border:1px solid {HAIRLINE};
+        .overview-table-wrap {{ background:#FFFFFF; border:0;
             border-radius:{RADIUS}; box-shadow:{SHADOW_SOFT}; padding:15px 17px; }}
         .overview-table th {{ text-align:left; padding:9px 6px; color:{INK_MUTED};
             font-size:10px; letter-spacing:.55px; text-transform:uppercase; }}
         .risk-badge {{ display:inline-block; min-width:46px; padding:4px 8px; border-radius:7px;
-            color:#FFFFFF; text-align:center; font-weight:750; }}
+            color:#FFFFFF; text-align:center; font-weight:{WEIGHT_SEMIBOLD}; }}
         .alerts-rail {{ border-left:0; padding-left:0; }}
         .alert-card {{ border:0; border-left:0; padding:13px 14px; margin-bottom:10px; }}
         .alert-card.is-critical {{ background:{STATUS_CRIT_BG}; }}
@@ -707,6 +804,7 @@ def normalize_headers(columns: Any) -> dict[str, str]:
     canonical = (
         {c.lower(): c for c in REQUIRED_COLUMNS}
         | {c.lower(): c for c in OPTIONAL_DEFAULTS}
+        | {c.lower(): c for c in LOCATION_COLUMNS}
         | {ion.lower(): ion for ion in ION_KEYS}
         | {alias: target for alias, target in HEADER_ALIASES.items()}
     )
@@ -761,6 +859,19 @@ def frame_to_cases(df: pd.DataFrame) -> tuple[list[WellCase], list[str]]:
                 defaulted.add(canon)
             else:
                 vals[canon] = float(value) if isinstance(default, float) else str(value).strip()
+
+        for canon in LOCATION_COLUMNS:
+            orig = by_canon.get(canon)
+            raw = None if orig is None or pd.isna(row[orig]) else row[orig]
+            if isinstance(raw, str) and not raw.strip():
+                raw = None
+            if canon in {"latitude", "longitude"}:
+                value = pd.to_numeric(raw, errors="coerce") if raw is not None else None
+                vals[canon] = None if value is None or pd.isna(value) else float(value)
+                if raw is not None and vals[canon] is None:
+                    errors.append(f"«{label}»: координата {canon} некорректна и не будет показана на карте")
+            else:
+                vals[canon] = None if raw is None else str(raw).strip() or None
 
         for canon in ("depth_m", "tubing_id_m", "q_oil_m3d",
                       "q_water_m3d", "gor_m3m3", "wat_stock_tank_c"):
@@ -851,6 +962,8 @@ def _row_to_case(label: str, vals: dict[str, float | str],
         inhibitor_efficiency=float(vals["inhibitor_efficiency"]),
         lift_type=str(vals["lift_type"]),
         p_wellhead_pa=float(vals["p_wellhead_pa"]),
+        latitude=vals.get("latitude"), longitude=vals.get("longitude"),
+        cluster=vals.get("cluster"), site=vals.get("site"),
         provenance=provenance,
     )
 
@@ -859,6 +972,8 @@ def template_frame() -> pd.DataFrame:
     """Одна строка-пример с полным набором колонок (скв. Речицкая 123)."""
     example = {
         "name": "Речицкая 123",
+        "latitude": 52.371, "longitude": 30.387,
+        "cluster": "Куст 3", "site": "Речицкое",
         "depth_m": 3200.0, "tubing_id_m": 0.062, "inclination_deg": 15.0,
         "q_oil_m3d": 8.0, "q_water_m3d": 72.0, "gor_m3m3": 65.0,
         "gamma_oil": 0.86, "gamma_gas": 0.78, "salinity_ppm": 290_000.0,
@@ -1289,9 +1404,9 @@ def style_rank(df: pd.DataFrame) -> Styler:
         bg, fg, _ = risk_status(float(row["Риск"]))
         styles = [f"background-color: {bg}; color: {INK}" for _ in df.columns]
         risk_i = df.columns.get_loc("Риск")
-        styles[risk_i] = f"background-color: {fg}; color: #FFFFFF; font-weight: 700"
+        styles[risk_i] = f"background-color: {fg}; color: #FFFFFF; font-weight: {WEIGHT_SEMIBOLD}"
         leader_i = df.columns.get_loc("Лидер")
-        styles[leader_i] = f"{styles[leader_i]}; color: {GREEN_900}; font-weight: 600"
+        styles[leader_i] = f"{styles[leader_i]}; color: {GREEN_900}; font-weight: {WEIGHT_SEMIBOLD}"
         return styles
 
     return (
@@ -1500,6 +1615,87 @@ def risk_economics_for_dashboard(case: WellCase, *, probability: float | None,
     ))
 
 
+def field_map_data(cases_by_name: dict[str, WellCase],
+                   results: list[DiagnosisResult]) -> galit.FieldMapData:
+    """Pair current cases/results and delegate all map semantics to the core."""
+    items = [DiagnosedWell(cases_by_name[result.well], result)
+             for result in results if result.well in cases_by_name]
+    return galit.prepare_field_map(items)
+
+
+# Ориентировочная зона Припятского прогиба: около 280 x 150 км, NW-SE.
+# Это визуальный региональный контекст, а не лицензионная геологическая граница.
+PRIPYAT_OVERVIEW_LON = (27.05, 27.45, 28.65, 29.95, 31.25, 31.30, 30.25, 28.90, 27.70, 27.05)
+PRIPYAT_OVERVIEW_LAT = (52.18, 52.73, 52.78, 52.57, 52.35, 51.65, 51.32, 51.43, 51.76, 52.18)
+
+
+def field_map_viewport(data: galit.FieldMapData) -> tuple[dict[str, float], float]:
+    """Return a stable wells-only viewport; never let a tiny spread or outlier show the world."""
+    latitudes = [point.latitude for point in data.points]
+    longitudes = [point.longitude for point in data.points]
+    if not latitudes:
+        return {"lat": 52.10, "lon": 29.10}, 6.4
+
+    lat_min, lat_max = min(latitudes), max(latitudes)
+    lon_min, lon_max = min(longitudes), max(longitudes)
+    center = {"lat": (lat_min + lat_max) / 2, "lon": (lon_min + lon_max) / 2}
+    lat_span = max(lat_max - lat_min, 0.025)
+    lon_span = max(lon_max - lon_min, 0.04)
+    latitude_scale = max(math.cos(math.radians(center["lat"])), 0.2)
+    effective_span = max(lat_span, lon_span * latitude_scale)
+    # 1.9 supplies padding; clamps retain local detail and prevent a world view.
+    zoom = math.log2(180.0 / (effective_span * 1.9)) - 1.0
+    return center, max(6.0, min(10.5, zoom))
+
+
+def fig_field_map(data: galit.FieldMapData) -> go.Figure:
+    """Interactive token-free OSM tile map with risk semantics and regional context."""
+    center, zoom = field_map_viewport(data)
+    fig = go.Figure()
+
+    fig.add_trace(go.Scattermap(
+        lat=PRIPYAT_OVERVIEW_LAT, lon=PRIPYAT_OVERVIEW_LON,
+        mode="lines", fill="toself", name="Припятский прогиб · обзорно",
+        line=dict(color="rgba(15,107,67,.62)", width=2),
+        fillcolor="rgba(61,139,102,.13)", hoverinfo="skip", showlegend=True,
+    ))
+    fig.add_trace(go.Scattermap(
+        lat=[52.12], lon=[30.22], mode="text", showlegend=False,
+        text=["ПРИПЯТСКИЙ ПРОГИБ · ОБЗОРНО"],
+        textfont=dict(size=11, color=GREEN_900), hoverinfo="skip",
+    ))
+
+    for status, label in galit.MAP_STATUS_LABELS.items():
+        points = [point for point in data.points if point.status == status]
+        fig.add_trace(go.Scattermap(
+            lat=[point.latitude for point in points],
+            lon=[point.longitude for point in points],
+            text=[point.well for point in points],
+            customdata=[[
+                point.risk, MECH_RU.get(point.dominant, point.dominant),
+                point.possible_oil_loss_m3d if point.possible_oil_loss_m3d is not None else "—",
+                point.cluster or "—", point.site or "—",
+            ] for point in points],
+            mode="markers", name=label,
+            marker=dict(size=[point.marker_size for point in points],
+                        color=galit.MAP_STATUS_COLORS[status], opacity=.88),
+            hovertemplate=("<b>%{text}</b><br>Статус: " + label +
+                           "<br>Риск: %{customdata[0]:.2f}<br>Механизм: %{customdata[1]}"
+                           "<br>Потеря под риском: %{customdata[2]} м³/сут"
+                           "<br>Куст: %{customdata[3]}<br>Участок: %{customdata[4]}<extra></extra>"),
+        ))
+    fig.update_layout(
+        map=dict(style="open-street-map", center=center, zoom=zoom),
+        height=560, autosize=True, paper_bgcolor="#FFFFFF",
+        font=dict(family=FONT_FAMILY, color=INK),
+        margin=dict(l=4, r=4, t=48, b=4),
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=BORDER, font=dict(color=INK)),
+        legend=dict(orientation="h", y=1.02, x=0, bgcolor="rgba(255,255,255,.88)"),
+        uirevision="galit-field-map",
+    )
+    return fig
+
+
 def fig_fund_risk(results: list[DiagnosisResult]) -> go.Figure:
     """Compact overview chart built only from the current diagnosis results."""
     ordered = sorted(results, key=lambda item: item.integrated_risk, reverse=True)[:12]
@@ -1632,16 +1828,20 @@ def fig_severity(detail: DiagnosisResult) -> go.Figure:
 
 def render_header() -> None:
     """Reference-inspired page header without inventing dates or field metadata."""
+    context_icon = icon_span("layers")
+    location_icon = icon_span("map-pin")
+    date_chevron = icon_span("chevron-down")
+    location_chevron = icon_span("chevron-down")
     st.html(
-        """
+        f"""
         <div class="dashboard-header">
             <div>
                 <div class="dashboard-title">ГАЛИТ</div>
                 <div class="dashboard-subtitle">Диагностика осложнений и приоритеты обслуживания</div>
             </div>
             <div class="dashboard-filters" aria-label="Контекст текущего расчёта">
-                <div class="filter-pill"><span class="filter-icon">▣</span>Текущий расчёт <span>⌄</span></div>
-                <div class="filter-pill"><span class="filter-icon">▽</span>Все месторождения <span>⌄</span></div>
+                <div class="filter-pill">{context_icon}Текущий расчёт {date_chevron}</div>
+                <div class="filter-pill">{location_icon}Все месторождения {location_chevron}</div>
             </div>
         </div>
         """
@@ -2308,8 +2508,8 @@ def main() -> None:
     # --- reference dashboard: center analytics plus a dedicated right alerts rail ---
     overview_main, overview_alerts_col = st.columns([3.35, 1], gap="large")
     with overview_main:
-        st.markdown('<div class="panel-title">Динамика риска по текущему фонду '
-                    '<span class="status-chip is-ok">текущий срез</span></div>',
+        st.markdown(f'<div class="panel-title">{icon_span("chart-column")}Динамика риска по текущему фонду '
+                    f'<span class="status-chip is-ok">{icon_span("circle-check")}текущий срез</span></div>',
                     unsafe_allow_html=True)
         st.plotly_chart(fig_risk_overview(results), width="stretch",
                         config={"displaylogo": False, "displayModeBar": False})
@@ -2326,16 +2526,16 @@ def main() -> None:
                 for item in sorted(results, key=lambda row: row.integrated_risk, reverse=True)[:5]
             )
             st.markdown(
-                '<div class="overview-table-wrap"><div class="panel-title">Топ скважин по риску</div>'
+                f'<div class="overview-table-wrap"><div class="panel-title">{icon_span("list-checks")}Топ скважин по риску</div>'
                 '<table class="overview-table"><thead><tr><th>Скважина</th>'
                 '<th>Ключевое осложнение</th><th>Риск</th><th>Качество</th></tr></thead>'
                 f'<tbody>{top_rows}</tbody></table>'
                 '<div class="shell-copy" style="color:#0F6B43;margin:12px 0 0">'
-                'Полный список — во вкладке «Ранжирование фонда» →</div></div>',
+                f'Полный список — во вкладке «Ранжирование фонда» {icon_span("arrow-right")}</div></div>',
                 unsafe_allow_html=True,
             )
         with mix_col:
-            st.markdown('<div class="panel-title">Структура осложнений</div>',
+            st.markdown(f'<div class="panel-title">{icon_span("layers")}Структура осложнений</div>',
                         unsafe_allow_html=True)
             st.plotly_chart(fig_mechanism_mix(results), width="stretch",
                             config={"displaylogo": False, "displayModeBar": False})
@@ -2355,9 +2555,12 @@ def main() -> None:
             )
         else:
             for alert in alerts[:6]:
+                alert_icon = icon_span(
+                    "triangle-alert" if alert["level"] == "critical" else "circle-dot"
+                )
                 st.markdown(
                     f'<div class="alert-card is-{alert["level"]}">'
-                    f'<div class="alert-card-title">◉ {html.escape(alert["well"])}</div>'
+                    f'<div class="alert-card-title">{alert_icon}{html.escape(alert["well"])}</div>'
                     f'<div class="alert-card-meta">{html.escape(alert["title"])}<br>'
                     f'{html.escape(alert["quality"])}</div></div>', unsafe_allow_html=True,
                 )
@@ -2365,8 +2568,8 @@ def main() -> None:
             st.caption(f"Ещё сигналов: {len(alerts) - 6}. Полный список — в ранжировании.")
 
     st.divider()
-    tab_plan, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_pilot, tab_passport, tab_journal = st.tabs(
-        ["План мастера", "Ранжирование фонда", "Профили T(z) · P(z)",
+    tab_plan, tab_map, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_pilot, tab_passport, tab_journal = st.tabs(
+        ["План мастера", "Карта месторождения", "Ранжирование фонда", "Профили T(z) · P(z)",
          "Детально по скважине", "Что будет, если?", "Экономика риска",
          "Прогноз во времени", "Сравнение с baseline / Пилот", "Цифровой паспорт", "Журнал мероприятий"]
     )
@@ -2407,6 +2610,28 @@ def main() -> None:
             st.markdown(f"**Оборудование:** {', '.join(task.equipment)}")
             if task.quality_warnings:
                 st.warning("Предупреждения качества: " + "; ".join(task.quality_warnings))
+
+    # --- карта фонда: цвет = риск, площадь маркера = добыча под риском ---
+    with tab_map:
+        map_data = field_map_data(cases_by_name, results)
+        summary = map_data.summary
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("На карте", f"{summary.mapped_wells} / {summary.total_wells}")
+        m2.metric("Критический", summary.counts_by_status["критический"])
+        m3.metric("Растущий риск", summary.counts_by_status["растущий риск"])
+        m4.metric("Потеря под риском", "—" if summary.possible_oil_loss_m3d is None
+                  else f"{summary.possible_oil_loss_m3d:.1f} м³/сут")
+        if map_data.points:
+            st.plotly_chart(fig_field_map(map_data), width="stretch",
+                            config={"displaylogo": False, "scrollZoom": True,
+                                    "responsive": True})
+            st.caption("Цвет показывает статус риска. Размер маркера — screening-оценку добычи под риском, а не прогноз фактической потери.")
+            st.caption("Зона «Припятский прогиб» показана обзорно для ориентации и не является точной или лицензионной геологической границей. Подложка OpenStreetMap требует интернет; если тайлы недоступны, проверьте соединение — точки и контур останутся интерактивными.")
+            skipped = summary.missing_coordinates + summary.invalid_coordinates
+            if skipped:
+                st.info(f"Не показано скважин: {skipped} (нет полной валидной пары latitude/longitude).")
+        else:
+            st.info("Карта пока пуста. Добавьте необязательные колонки latitude и longitude (WGS84) в файл фонда; пример есть в шаблоне XLSX.")
 
     # --- вкладка 1: рейтинг ---
     with tab_rank:

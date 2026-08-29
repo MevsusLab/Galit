@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import base64
 import io
 from dataclasses import replace
 from pathlib import Path
@@ -66,6 +67,42 @@ def test_frame_to_cases_minimal_columns_use_defaults():
     assert case.wax.wax_content_pct == 5.0
     # ионный состав не задан -- подставлен типовой рассол
     assert case.water.ions_mg_l == dashboard.TYPICAL_BRINE
+
+
+def test_frame_to_cases_preserves_location_metadata_for_map():
+    row = base_row() | {
+        "latitude": 52.371, "longitude": 30.387,
+        "cluster": "╨Ъ╤Г╤Б╤В 3", "site": "╨а╨╡╤З╨╕╤Ж╨║╨╛╨╡",
+    }
+    cases, errors = dashboard.frame_to_cases(pd.DataFrame([row]))
+    assert errors == []
+    case = cases[0]
+    assert (case.latitude, case.longitude, case.cluster, case.site) == (
+        52.371, 30.387, "╨Ъ╤Г╤Б╤В 3", "╨а╨╡╤З╨╕╤Ж╨║╨╛╨╡",
+    )
+
+    diagnosed = dashboard.galit.DiagnosedWell(case, diagnose(case))
+    map_data = dashboard.galit.prepare_field_map([diagnosed])
+    assert map_data.summary.mapped_wells == 1
+    assert (map_data.points[0].latitude, map_data.points[0].longitude) == (52.371, 30.387)
+    assert (map_data.points[0].cluster, map_data.points[0].site) == ("╨Ъ╤Г╤Б╤В 3", "╨а╨╡╤З╨╕╤Ж╨║╨╛╨╡")
+
+
+def test_frame_to_cases_empty_coordinates_are_safe_for_map():
+    row = base_row() | {
+        "latitude": "", "longitude": pd.NA,
+        "cluster": "", "site": None,
+    }
+    cases, errors = dashboard.frame_to_cases(pd.DataFrame([row]))
+    assert errors == []
+    case = cases[0]
+    assert case.latitude is None and case.longitude is None
+    assert case.cluster is None and case.site is None
+
+    diagnosed = dashboard.galit.DiagnosedWell(case, diagnose(case))
+    map_data = dashboard.galit.prepare_field_map([diagnosed])
+    assert map_data.points == ()
+    assert map_data.summary.missing_coordinates == 1
 
 
 def test_frame_to_cases_missing_required_column():
@@ -160,6 +197,61 @@ def test_overview_figures_and_alerts_use_current_results_only():
     assert sum(mix_fig.data[0].values) == len(results)
     assert all("timestamp" not in alert and "time" not in alert for alert in alerts)
     assert all(alert["well"] in {item.well for item in results} for alert in alerts)
+
+
+def test_field_map_uses_scattermap_osm_and_stable_local_viewport():
+    cases = dashboard.galit.synthetic.make_fund(3, seed=23)
+    located = [
+        replace(cases[0], latitude=52.4102, longitude=30.7541),
+        replace(cases[1], latitude=52.4280, longitude=30.7810),
+        replace(cases[2], latitude=52.4451, longitude=30.8124),
+    ]
+    items = []
+    expected_sizes = {}
+    expected_colors = {}
+    for case, risk in zip(located, (.1, .45, .75)):
+        result = diagnose(case)
+        result.integrated_risk = risk
+        items.append(dashboard.galit.DiagnosedWell(case, result))
+    data = dashboard.galit.prepare_field_map(items)
+    for point in data.points:
+        expected_sizes[point.status] = point.marker_size
+        expected_colors[point.status] = dashboard.galit.MAP_STATUS_COLORS[point.status]
+
+    fig = dashboard.fig_field_map(data)
+    assert fig.layout.map.style == "open-street-map"
+    assert fig.layout.map.center.lat == pytest.approx((52.4102 + 52.4451) / 2)
+    assert fig.layout.map.center.lon == pytest.approx((30.7541 + 30.8124) / 2)
+    assert 8.0 <= fig.layout.map.zoom <= 10.5
+    assert all(trace.type == "scattermap" for trace in fig.data)
+
+    status_traces = {trace.name: trace for trace in fig.data if trace.name in dashboard.galit.MAP_STATUS_LABELS.values()}
+    assert set(status_traces) == set(dashboard.galit.MAP_STATUS_LABELS.values())
+    for status, label in dashboard.galit.MAP_STATUS_LABELS.items():
+        trace = status_traces[label]
+        assert list(trace.marker.size) == [expected_sizes[status]]
+        assert trace.marker.color == expected_colors[status]
+
+
+def test_field_map_has_explicit_approximate_pripyat_context():
+    case = replace(dashboard.galit.synthetic.make_fund(1, seed=24)[0],
+                   latitude=52.43, longitude=30.78)
+    data = dashboard.galit.prepare_field_map([
+        dashboard.galit.DiagnosedWell(case, diagnose(case))
+    ])
+    fig = dashboard.fig_field_map(data)
+    contour = fig.data[0]
+    label = fig.data[1]
+
+    assert contour.type == "scattermap" and contour.fill == "toself"
+    assert "обзорно" in contour.name.lower()
+    assert contour.lon[0] == contour.lon[-1] and contour.lat[0] == contour.lat[-1]
+    assert max(contour.lon) - min(contour.lon) >= 4.0
+    assert max(contour.lat) - min(contour.lat) >= 1.3
+    assert "ОБЗОРНО" in label.text[0]
+    source = Path("dashboard.py").read_text(encoding="utf-8")
+    assert "не является точной или лицензионной геологической границей" in source
+    assert "Подложка OpenStreetMap требует интернет" in source
 
 
 # -------------------------------------------------------------- шаблон XLSX
@@ -310,6 +402,7 @@ def test_apptest_upload_renders_master_plan_as_first_tab():
     assert not app.exception
     assert [tab.label for tab in app.tabs] == [
         "\u041f\u043b\u0430\u043d \u043c\u0430\u0441\u0442\u0435\u0440\u0430",
+        "Карта месторождения",
         "\u0420\u0430\u043d\u0436\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0444\u043e\u043d\u0434\u0430",
         "\u041f\u0440\u043e\u0444\u0438\u043b\u0438 T(z) \u00b7 P(z)",
         "\u0414\u0435\u0442\u0430\u043b\u044c\u043d\u043e \u043f\u043e \u0441\u043a\u0432\u0430\u0436\u0438\u043d\u0435",
@@ -381,6 +474,150 @@ def test_status_pairs_and_styler_foregrounds_meet_wcag():
     assert "#2E7D32" not in html and "#B26A00" not in html and "#C62828" not in html
 
 
+# ------------------------------------------------- typography / icon library
+
+def test_outfit_is_primary_font_with_cyrillic_fallback_and_local_faces():
+    assert dashboard.FONT_FAMILY.startswith("Outfit, Manrope,")
+    config = Path(".streamlit/config.toml").read_text(encoding="utf-8")
+    assert re.search(r'^font\s*=\s*"Outfit, Manrope, sans serif"$', config, re.MULTILINE)
+
+    # Outfit не содержит кириллицу, поэтому Manrope обязателен и должен покрывать U+04xx.
+    families = {family for family, _, _ in dashboard.FONT_FACES}
+    assert families == {"Outfit", "Manrope"}
+    cyrillic = [
+        unicode_range for family, _, unicode_range in dashboard.FONT_FACES
+        if family == "Manrope"
+    ]
+    assert cyrillic and all("U+04" in item for item in cyrillic)
+
+    css = dashboard.font_face_css()
+    assert css.count("@font-face") == len(dashboard.FONT_FACES)
+    for family, _, unicode_range in dashboard.FONT_FACES:
+        assert f"font-family:'{family}'" in css
+        assert f"unicode-range:{unicode_range}" in css
+    # Переменный woff2 отдаёт весь диапазон весов одним файлом.
+    assert "font-weight:200 700" in css
+    assert "data:font/woff2;base64," in css
+
+
+def test_font_faces_are_repository_local_woff2_files():
+    for _, file_name, _ in dashboard.FONT_FACES:
+        path = dashboard.FONT_DIR / file_name
+        assert path.is_file(), f"нет локального шрифта {file_name}"
+        assert path.suffix == ".woff2"
+    assert dashboard.font_face_css(Path("no-such-font-dir")) == ""
+
+
+def test_typography_uses_light_weights_only():
+    assert dashboard.WEIGHT_REGULAR == 400
+    assert dashboard.WEIGHT_MEDIUM == 500
+    assert dashboard.WEIGHT_SEMIBOLD == 600
+
+    source = Path("dashboard.py").read_text(encoding="utf-8")
+    css_start = source.index("def inject_css")
+    css = source[css_start:source.index("\ninject_css()")]
+    # Прежний дизайн держал 650-900; после облегчения числовых литералов
+    # в CSS не остаётся вовсе — только токены WEIGHT_*.
+    assert not re.findall(r"font-weight:\s*[0-9]+", css)
+    for token in ("{WEIGHT_REGULAR}", "{WEIGHT_MEDIUM}"):
+        assert token in css
+    assert max(
+        int(value) for value in
+        re.findall(r"WEIGHT_(?:REGULAR|MEDIUM|SEMIBOLD) = ([0-9]+)", source)
+    ) <= 600
+
+
+def test_borders_are_removed_or_kept_subtle():
+    source = Path("dashboard.py").read_text(encoding="utf-8")
+    css = source[source.index("def inject_css"):source.index("\ninject_css()")]
+
+    # Жёсткая непрозрачная обводка карточек убрана полностью.
+    assert not re.findall(r"border[^:}\n]*:\s*1px solid \{HAIRLINE\}", css)
+    assert "{HAIRLINE_SOFT}" in css and "{HAIRLINE_FAINT}" in css
+
+    for surface in (
+        '.app-header', '.surface-card', '.note-box', '.panel-card',
+        '.overview-table-wrap', '.status-chip',
+    ):
+        block = css[css.index(surface):]
+        block = block[:block.index("}}")]
+        assert re.search(r"border:\s*0|border:\s*none", block), surface
+
+    # Полупрозрачные линии заметно светлее прежнего #E7EBE8.
+    for token in ("HAIRLINE_SOFT", "HAIRLINE_FAINT"):
+        declaration = re.search(rf'{token} = "(.+?)"', source).group(1)
+        assert declaration.startswith("rgba(")
+        assert float(declaration.rsplit(",", 1)[1].strip(" )")) <= 0.06
+
+
+def test_icons_come_from_lucide_library_without_handwritten_paths():
+    source = Path("dashboard.py").read_text(encoding="utf-8")
+    # Ни одной вручную нарисованной геометрии: путей и viewBox в коде нет.
+    assert "<path" not in source
+    assert "viewBox" not in source
+    # Единственное место, где вообще встречается тег svg, — постобработка
+    # готового файла Lucide внутри lucide_icon().
+    helper = source[source.index("def lucide_icon"):source.index("def icon_span")]
+    assert source.count("<svg") == helper.count("<svg")
+
+    icon = dashboard.lucide_icon("circle-check", 15)
+    assert 'class="gx-icon lucide lucide-circle-check"' in icon
+    assert 'width="15" height="15"' in icon
+    assert 'aria-hidden="true"' in icon
+    assert "<!--" not in icon  # лицензионный комментарий не попадает в разметку
+    assert dashboard.lucide_icon("definitely-missing-icon") == ""
+    assert dashboard.icon_span("definitely-missing-icon") == ""
+    assert dashboard.icon_span("circle-check").startswith('<span class="gx-icon-wrap">')
+
+    data_uri = dashboard.lucide_data_uri("triangle-alert", dashboard.STATUS_CRIT)
+    assert data_uri.startswith("data:image/svg+xml;base64,")
+    decoded = base64.b64decode(data_uri.split(",", 1)[1]).decode("utf-8")
+    assert f'stroke="{dashboard.STATUS_CRIT}"' in decoded
+    assert "currentColor" not in decoded
+
+
+def test_icon_assets_are_vendored_with_license():
+    license_file = dashboard.ICON_DIR / "LUCIDE-LICENSE.txt"
+    assert license_file.is_file()
+    assert "ISC" in license_file.read_text(encoding="utf-8")
+
+    for name in ("layout-dashboard", "list-checks", "chart-column", "activity",
+                 "circle-check", "triangle-alert", "trending-up", "circle-dot",
+                 "layers", "map-pin", "chevron-down", "arrow-right", "gauge"):
+        markup = (dashboard.ICON_DIR / f"{name}.svg").read_text(encoding="utf-8")
+        assert "lucide-static" in markup  # апстрим-происхождение сохранено
+
+    assert dashboard.FAVICON_ASSET.is_file()
+    assert "lucide" in dashboard.FAVICON_ASSET.read_text(encoding="utf-8")
+
+
+def test_ui_renders_lucide_icons_instead_of_emoji_placeholders():
+    source = Path("dashboard.py").read_text(encoding="utf-8")
+    # Символы-заглушки прежнего дизайна и эмодзи-favicon удалены.
+    for placeholder in ("◌", "▦", "◆", "↗", "▣", "▽", "⌄", "◉", "🛢"):
+        assert placeholder not in source
+    assert 'page_icon="' not in source
+
+    # Шапка рендерится через st.html и в AppTest.markdown не попадает,
+    # поэтому её иконки проверяем в исходнике.
+    header = source[source.index("def render_header"):source.index("def render_welcome")]
+    assert 'icon_span("layers"' in header
+    assert 'icon_span("map-pin"' in header
+    assert header.count('icon_span("chevron-down"') == 2
+
+    app = AppTest.from_file(str(Path(dashboard.__file__)), default_timeout=120).run()
+    app.get("file_uploader")[0].set_value(
+        ("valid-fund.csv", MINIMAL_CSV, "text/csv")
+    ).run()
+    assert not app.exception
+
+    markup = "\n".join(item.value for item in app.markdown)
+    rendered = set(re.findall(r"lucide-([a-z-]+)", markup))
+    assert {"chart-column", "list-checks", "layers", "arrow-right"} <= rendered
+    assert rendered & {"triangle-alert", "trending-up", "circle-dot", "circle-check"}
+    assert 'class="gx-icon-wrap"' in markup
+
+
 # ----------------------------------------------- forecast parser / timeline
 
 def test_forecast_history_parser_requires_timezone_and_preserves_undated():
@@ -409,7 +646,8 @@ def test_apptest_demo_has_economics_and_forecast_tabs():
     button.click().run()
     assert not app.exception
     labels = [tab.label for tab in app.tabs]
-    assert len(labels) == 10
+    assert len(labels) == 11
+    assert "Карта месторождения" in labels
     assert "Что будет, если?" in labels
     assert "Экономика риска" in labels and "Прогноз во времени" in labels
     assert labels[-1] == "Журнал мероприятий"

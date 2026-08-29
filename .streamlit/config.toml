@@ -4,7 +4,10 @@ primaryColor = "#0F6B43"
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F6F8F7"
 textColor = "#1F2422"
-font = "sans serif"
+# Outfit — основная гарнитура (латиница/цифры), Manrope закрывает кириллицу,
+# которой в Outfit нет. Сами файлы подключены в dashboard.py через @font-face
+# из assets/fonts, поэтому внешний CDN не требуется.
+font = "Outfit, Manrope, sans serif"
 
 [client]
 toolbarMode = "minimal"

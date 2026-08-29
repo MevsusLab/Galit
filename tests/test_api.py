@@ -255,6 +255,7 @@ class TestMasterPlanEndpoint:
             assert {"well", "risk", "possible_oil_loss", "safe_to_act"} <= set(task)
             if not task["safe_to_act"]:
                 assert "Не выполнять воздействие" in task["recommended_action"]
+        assert {"summary", "points"} <= set(body["map"])
 
     def test_empty_and_limit_validation(self):
         assert client.post("/api/v1/master-plan", json=[]).status_code == 422

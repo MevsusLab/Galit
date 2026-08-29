@@ -113,6 +113,23 @@ def test_import_does_not_load_bot_token():
 
 # ------------------------------------------------------------- сборка кейса
 
+def test_build_case_supports_optional_coordinates():
+    params, errors = tb.parse_args(POSITIONAL + ["lat=52,37", "lon=30.38"])
+    assert errors == []
+    case = tb.build_case(params)
+    assert case.latitude == 52.37 and case.longitude == 30.38
+
+
+def test_map_summary_has_statuses_coordinates_and_empty_state():
+    assert "История пуста" in tb.format_map_messages([])[0]
+    params, _ = tb.parse_args(POSITIONAL + ["скважина=<A>", "lat=52.37", "lon=30.38"])
+    case = tb.build_case(params)
+    text = "\n".join(tb.format_map_messages([galit.DiagnosedWell(case, diagnose(case))]))
+    assert "Карта месторождения" in text and "52.37000, 30.38000" in text
+    assert "<A>" not in text and "&lt;A&gt;" in text
+    assert "/map" in tb.HELP_TEXT
+
+
 def test_build_case_units_and_defaults():
     params, _ = tb.parse_args(POSITIONAL)
     case = tb.build_case(params)

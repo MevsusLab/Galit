@@ -42,6 +42,16 @@ from .forecast import (
     WellForecast,
     forecast_well,
 )
+from .field_map import (
+    FieldMapData,
+    FieldMapPoint,
+    FieldMapSummary,
+    STATUS_COLORS as MAP_STATUS_COLORS,
+    STATUS_LABELS as MAP_STATUS_LABELS,
+    map_status,
+    prepare_field_map,
+    valid_coordinates,
+)
 from .master_plan import (
     DEFAULT_MASTER_PLAN_POLICY,
     DiagnosedWell,
@@ -133,6 +143,14 @@ __all__ = [
     "DEFAULT_RISK_POLICY",
     "DEFAULT_MASTER_PLAN_POLICY",
     "DiagnosedWell",
+    "FieldMapData",
+    "FieldMapPoint",
+    "FieldMapSummary",
+    "MAP_STATUS_COLORS",
+    "MAP_STATUS_LABELS",
+    "map_status",
+    "prepare_field_map",
+    "valid_coordinates",
     "DiagnosisResult",
     "MasterPlan",
     "MasterPlanPolicy",

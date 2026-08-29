@@ -88,6 +88,8 @@ KEY_ALIASES = {
     "co2": "co2_mol_frac",
     "буферное": "p_wellhead_mpa", "wellhead": "p_wellhead_mpa",
     "скважина": "name", "well": "name", "name": "name",
+    "широта": "latitude", "lat": "latitude",
+    "долгота": "longitude", "lon": "longitude", "lng": "longitude",
 }
 
 # Позиционные аргументы /aspo в порядке следования
@@ -109,6 +111,8 @@ RANGES: dict[str, tuple[float, float, str]] = {
     "wax_pct": (0.0, 20.0, "содержание парафина, % масс."),
     "co2_mol_frac": (0.0, 0.5, "доля CO2 (0–0.5)"),
     "p_wellhead_mpa": (0.2, 25.0, "буферное давление, МПа"),
+    "latitude": (-90.0, 90.0, "широта WGS84"),
+    "longitude": (-180.0, 180.0, "долгота WGS84"),
 }
 
 # Значения по умолчанию, отсутствующие в ядре WellCase
@@ -675,6 +679,37 @@ def format_plan_messages(items: list[DiagnosedWell], top: int = 10) -> list[str]
     return chunks
 
 
+def format_map_messages(items: list[DiagnosedWell]) -> list[str]:
+    """Text-only map summary for field use; no unsupported interactive attachment."""
+    if not items:
+        return ["История пуста. Сначала выполните /aspo, при необходимости задав lat= и lon=."]
+    data = galit.prepare_field_map(items)
+    summary = data.summary
+    blocks = [
+        "<b>Карта месторождения · сводка</b>",
+        f"На карте: {summary.mapped_wells} из {summary.total_wells} · "
+        f"без координат: {summary.missing_coordinates} · некорректных: {summary.invalid_coordinates}",
+        "Статусы: " + " · ".join(
+            f"{html.escape(label)} {summary.counts_by_status[label]}"
+            for label in ("норма", "растущий риск", "критический")
+        ),
+        "Потеря под риском по отображённым: " + (
+            "—" if summary.possible_oil_loss_m3d is None
+            else f"{summary.possible_oil_loss_m3d:.1f} м³/сут"
+        ),
+    ]
+    for point in sorted(data.points, key=lambda row: (-row.risk, row.well.casefold()))[:10]:
+        loss = "—" if point.possible_oil_loss_m3d is None else f"{point.possible_oil_loss_m3d:.1f} м³/сут"
+        blocks.append(
+            f"<b>{html.escape(point.well)}</b> · {html.escape(point.status_label)} · риск {point.risk:.2f}\n"
+            f"{point.latitude:.5f}, {point.longitude:.5f} · потеря {loss}"
+        )
+    if not data.points:
+        blocks.append("Нет скважин с полной валидной парой latitude/longitude. Добавьте lat= и lon= в /aspo.")
+    blocks.append("Размер маркера в веб-карте соответствует screening-оценке добычи под риском, не прогнозу фактической потери.")
+    return _forecast_chunks(blocks)
+
+
 def _to_float(raw: str) -> float | None:
     """Число с допуском запятой в качестве десятичного разделителя."""
     try:
@@ -773,6 +808,8 @@ def build_case(params: dict[str, float | str]) -> WellCase:
         co2_mol_frac=float(merged["co2_mol_frac"]),
         lift_type=str(merged["lift_type"]),
         p_wellhead_pa=float(merged["p_wellhead_mpa"]) * 1e6,
+        latitude=float(merged["latitude"]) if "latitude" in merged else None,
+        longitude=float(merged["longitude"]) if "longitude" in merged else None,
         provenance=DataProvenance(sources={
             "water.ions_mg_l": "synthetic",
             "water.ph": "default", "water.t_c": "default", "water.p_pa": "default",
@@ -942,12 +979,12 @@ START_TEXT = (
     "3. Дебит нефти, м³/сут\n4. Дебит воды, м³/сут\n"
     "5. Газовый фактор, м³/м³\n6. WAT, °C\n\n"
     "Чтобы начать, нажмите «🔎 Новый расчёт».\n"
-    "Последние расчёты: /plan; прогноз: /forecast [скважина]; сценарий: /scenario; экономика: /economics; очистка — /plan_clear."
+    "Последние расчёты: /plan; карта: /map; прогноз: /forecast [скважина]; сценарий: /scenario; экономика: /economics; очистка — /plan_clear."
 )
 HELP_TEXT = (
     "<b>Справка</b>\n\n"
-    "ГАЛИТ выполняет предварительную оценку АСПО и помогает выбрать "
-    "следующее действие. Результат требует инженерной проверки.\n\n"
+    "ГАЛИТ даёт предварительную оценку АСПО и подсказывает действие. "
+    "Результат требует инженерной проверки.\n\n"
     "<b>Пошагово:</b> нажмите «🔎 Новый расчёт» и введите 6 значений: "
     "глубина (м), НКТ (мм), нефть и вода (м³/сут), газовый фактор "
     "(м³/м³), WAT (°C). Доступна отмена.\n\n"
@@ -958,13 +995,14 @@ HELP_TEXT = (
     "<code>парафин=</code>, <code>температура=</code>, "
     "<code>градиент=</code>, <code>co2=</code>, <code>буферное=</code>. "
     "Десятичный разделитель — точка или запятая.\n\n"
-    "<b>Команды:</b> <code>/plan</code>, <code>/forecast</code>, "
-    "<code>/economics</code>, <code>/plan_clear</code>.\n"
+    "<b>Команды:</b> <code>/plan</code>, <code>/map</code>, <code>/forecast</code>, "
+    "<code>/economics</code>, <code>/plan_clear</code>. Карта: "
+    "<code>lat=52.37 lon=30.38</code>.\n"
     "Паспорт: <code>/passport</code>, <code>/passport_history</code>, "
     "<code>/passport_add</code>, <code>/passport_rate</code>.\n"
     "Сценарий: <code>/scenario oil_pct=-10 temperature=2 wash=yes</code>; "
     "выбор: <code>well=Имя</code>; явный эффект: "
-    "<code>inhibitor_effect=0.8 source=паспорт</code>. История локальная и исчезает при перезапуске."
+    "<code>inhibitor_effect=0.8 source=паспорт</code>."
 )
 EXAMPLE_TEXT = (
     "<b>Пример исходных данных</b>\n\n"
@@ -1324,6 +1362,13 @@ async def cmd_passport_rate(message: Message) -> None:
 async def cmd_plan(message: Message) -> None:
     chat_id = message.chat.id if message.chat else 0
     for chunk in format_plan_messages(RECENT_DIAGNOSES.get(chat_id)):
+        await message.answer(chunk, disable_web_page_preview=True, reply_markup=MAIN_MENU)
+
+
+@dp.message(Command("map"))
+async def cmd_map(message: Message) -> None:
+    chat_id = message.chat.id if message.chat else 0
+    for chunk in format_map_messages(RECENT_DIAGNOSES.get(chat_id)):
         await message.answer(chunk, disable_web_page_preview=True, reply_markup=MAIN_MENU)
 
 
