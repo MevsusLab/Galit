@@ -2152,6 +2152,82 @@ def ensure_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
+def equipment_portfolio_frame(rows: list[galit.EquipmentForecast]) -> pd.DataFrame:
+    """Stable table for equipment priorities, safe with partial/unavailable forecasts."""
+    return pd.DataFrame([{
+        "Скважина": row.well, "Тип": row.lift_type,
+        "Baseline-риск": row.baseline_failure_risk, "Уровень": row.risk_level,
+        "RUL, сут": "—" if row.rul_days is None else f"{row.rul_days[0]}–{row.rul_days[1]}",
+        "Причина": row.causes[0].label if row.causes else "—",
+        "Обслуживание": "—" if row.maintenance_window_start is None else
+            f"{row.maintenance_window_start.date()} — {row.maintenance_window_end.date()}",
+        "Confidence": row.confidence, "Полнота": row.data_completeness,
+    } for row in rows])
+
+
+def equipment_trend_frame(rows: list[galit.TelemetrySnapshot]) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "timestamp": row.timestamp, "Ток, A": row.current_a,
+        "Давление нагнетания": row.discharge_pressure,
+        "Температура двигателя, °C": row.motor_temperature_c,
+        "Вибрация, мм/с": row.vibration_mm_s,
+        "Нагрузка ШГН, кН": row.rod_load_kn,
+    } for row in rows])
+
+
+def render_equipment_forecasts(repository: galit.EquipmentRepository) -> None:
+    st.subheader("Прогноз отказов ЭЦН и ШГН")
+    st.warning(galit.EQUIPMENT_DISCLAIMER)
+    st.download_button("Скачать CSV-шаблон телеметрии", galit.telemetry_csv_template(),
+                       "equipment-telemetry-template.csv", "text/csv", key="equipment-template")
+    uploaded = st.file_uploader("Импорт телеметрии CSV", type=["csv"], key="equipment-csv")
+    if uploaded is not None and st.button("Проверить и импортировать", key="equipment-import"):
+        try:
+            imported = 0
+            for item in galit.telemetry_from_csv(uploaded.getvalue()):
+                repository.ingest(item, idempotent=True); imported += 1
+            st.success(f"Принято snapshots: {imported}. Повторы обработаны идемпотентно.")
+        except (ValueError, galit.EquipmentConflictError, galit.EquipmentStorageError) as exc:
+            st.error(f"Импорт не выполнен: {exc}")
+    try:
+        portfolio = repository.portfolio()
+    except galit.EquipmentStorageError as exc:
+        st.error(f"Хранилище оборудования недоступно: {exc}"); return
+    if not portfolio:
+        st.info("Нет metadata оборудования. Добавьте его через API, затем загрузите телеметрию.")
+        return
+    lift = st.multiselect("Тип оборудования", ["ESP", "ROD_PUMP", "UNSUPPORTED"],
+                          default=["ESP", "ROD_PUMP"], key="equipment-lift-filter")
+    levels = st.multiselect("Уровень риска", ["normal", "warning", "critical", "unavailable"],
+                            default=["normal", "warning", "critical", "unavailable"], key="equipment-risk-filter")
+    shown = [row for row in portfolio if row.lift_type in lift and row.risk_level in levels]
+    cols = st.columns(4)
+    cols[0].metric("Оборудование", len(shown)); cols[1].metric("Критические", sum(x.risk_level == "critical" for x in shown))
+    cols[2].metric("Требуют внимания", sum(x.risk_level == "warning" for x in shown))
+    cols[3].metric("Средняя полнота", f"{sum(x.data_completeness for x in shown)/len(shown):.0%}" if shown else "—")
+    st.dataframe(equipment_portfolio_frame(shown), width="stretch", hide_index=True)
+    if not shown: return
+    selected = st.selectbox("Карточка скважины", [x.well for x in shown], key="equipment-well")
+    forecast = next(x for x in shown if x.well == selected)
+    left, right = st.columns([1, 2])
+    with left:
+        st.metric("Baseline failure risk", "—" if forecast.baseline_failure_risk is None else f"{forecast.baseline_failure_risk:.0%}")
+        st.metric("RUL range", "unavailable" if forecast.rul_days is None else f"{forecast.rul_days[0]}–{forecast.rul_days[1]} сут")
+        st.caption(f"Качество {forecast.data_completeness:.0%} · confidence {forecast.confidence} · {forecast.model_version}")
+    with right:
+        st.markdown("#### Ранжированные причины")
+        st.dataframe(pd.DataFrame([{"Причина": x.label, "Группа": x.group,
+                                   "Индикатор": x.indicator, "Вклад": x.contribution,
+                                   "Объяснение": x.explanation} for x in forecast.causes]),
+                     width="stretch", hide_index=True)
+        st.markdown(f"**Рекомендуемое действие:** {forecast.recommended_action}")
+    trend = equipment_trend_frame(repository.list_telemetry(selected))
+    if len(trend) > 1:
+        st.line_chart(trend.set_index("timestamp"))
+    elif len(trend) == 1:
+        st.info("Доступен один snapshot: тренды не рассчитываются, confidence снижен.")
+
+
 def treatment_well_context(cases_by_name: dict[str, WellCase],
                            results: list[DiagnosisResult]) -> dict[str, dict[str, Any]]:
     """Build safe autofill context from the current calculated fund."""
@@ -2180,7 +2256,10 @@ def treatment_history_frame(records: list[galit.TreatmentRecord],
         rows.append({
             "ID": item.id, "Скважина": item.well_name, "Дата": item.event_at,
             "Осложнение": item.complication_type, "Группа": item.well_group,
+            "Месторождение": item.field_name, "Куст": item.cluster, "Участок": item.site,
             "Реагент": item.reagent_name, "Дозировка": f"{item.dosage:g} {item.dosage_unit}",
+            "Дебит до, м³/сут": item.rate_before_m3_day,
+            "Дебит после, м³/сут": item.rate_after_m3_day,
             "Стоимость": item.cost, "Валюта": item.currency,
             "Мероприятие": item.treatment_type, "Статус": item.status.value,
             "Успех": item.success, "Эффект, сут": item.effect_duration_days,
@@ -2266,6 +2345,11 @@ def render_treatment_journal(repository: galit.TreatmentRepository,
             cost = cost_col.number_input("Стоимость", min_value=0.0)
             currency = cost_col.selectbox("Валюта", sorted(galit.treatments.VALID_CURRENCIES))
             treatment_type = st.text_input("Тип обработки")
+            loc1, loc2, loc3 = st.columns(3)
+            field_name = loc1.text_input("Месторождение")
+            cluster = loc2.text_input("Куст")
+            site = loc3.text_input("Участок")
+            rate_before = st.number_input("Дебит до, м³/сут", min_value=0.0)
             expected = st.text_area("Ожидаемый результат (не факт)")
             baseline_risk = st.number_input("Исходный риск", 0.0, 1.0,
                                             value=float(defaults.get("baseline_risk") or 0.0))
@@ -2283,7 +2367,10 @@ def render_treatment_journal(repository: galit.TreatmentRepository,
                     complication_type=complication, description=description,
                     reagent_name=reagent, reagent_id=reagent_id or None, dosage=dosage,
                     dosage_unit=dosage_unit, cost=cost, currency=currency,
-                    treatment_type=treatment_type, baseline_risk=baseline_risk,
+                    treatment_type=treatment_type, field_name=field_name or None,
+                    cluster=cluster or None, site=site or None,
+                    rate_before_m3_day=rate_before,
+                    baseline_risk=baseline_risk,
                     baseline_state=baseline_state or None, expected_result=expected or None,
                     source=source, well_group=well_group or None, comment=comment or None,
                 )
@@ -2321,6 +2408,7 @@ def render_treatment_journal(repository: galit.TreatmentRepository,
             elif next_status is galit.TreatmentStatus.ASSESSED:
                 with st.form("treatment-assess"):
                     actual = st.text_area("Фактический результат")
+                    rate_after = st.number_input("Дебит после, м³/сут", min_value=0.0)
                     metric_name = st.text_input("Измеримый показатель", value="oil_rate_delta_m3_day")
                     metric_value = st.number_input("Значение показателя", min_value=0.0)
                     success_choice = st.selectbox("Успех", ["да", "нет"])
@@ -2336,6 +2424,7 @@ def render_treatment_journal(repository: galit.TreatmentRepository,
                         updated = item.transition(
                             galit.TreatmentStatus.ASSESSED, actual_result=actual,
                             result_metrics={metric_name: metric_value}, success=success_choice == "да",
+                            rate_after_m3_day=rate_after,
                             effect_duration_days=days, recurrence=recurrence,
                             recurrence_date=ensure_utc(recurrence_date) if recurrence else None,
                             comment=comment or None,
@@ -2568,10 +2657,10 @@ def main() -> None:
             st.caption(f"Ещё сигналов: {len(alerts) - 6}. Полный список — в ранжировании.")
 
     st.divider()
-    tab_plan, tab_map, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_pilot, tab_passport, tab_journal = st.tabs(
+    tab_plan, tab_map, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_equipment, tab_pilot, tab_passport, tab_journal = st.tabs(
         ["План мастера", "Карта месторождения", "Ранжирование фонда", "Профили T(z) · P(z)",
          "Детально по скважине", "Что будет, если?", "Экономика риска",
-         "Прогноз во времени", "Сравнение с baseline / Пилот", "Цифровой паспорт", "Журнал мероприятий"]
+         "Прогноз во времени", "Оборудование / Прогноз отказов", "Сравнение с baseline / Пилот", "Цифровой паспорт", "Журнал мероприятий"]
     )
 
     # --- первая вкладка: тот же уже сформированный доменный план ---
@@ -3000,6 +3089,9 @@ def main() -> None:
     with tab_passport:
         render_well_passport(passport_repository, treatment_repository,
                              sorted(cases_by_name))
+
+    with tab_equipment:
+        render_equipment_forecasts(galit.EquipmentRepository(os.environ.get("GALIT_EQUIPMENT_STORAGE", "data/equipment.json")))
 
     with tab_journal:
         render_treatment_journal(

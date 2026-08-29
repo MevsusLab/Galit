@@ -1,0 +1,32 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/equipment/telemetry'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "id": "well-esp-1-20260823t120000z",
+      "well": "Well-ESP-1",
+      "lift_type": "ESP",
+      "timestamp": "2026-08-23T12:00:00+00:00",
+      "current_a": 112,
+      "nominal_current_a": 100,
+      "intake_pressure": 5,
+      "discharge_pressure": 10,
+      "baseline_intake_pressure": 5,
+      "baseline_discharge_pressure": 10,
+      "pressure_unit": "mpa",
+      "motor_temperature_c": 80,
+      "temperature_limit_c": 100,
+      "vibration_mm_s": 4,
+      "vibration_limit_mm_s": 10,
+      "sand_fraction": 0.1,
+      "halite_risk": 0.2,
+      "calcite_risk": 0.1,
+      "wax_risk": 0.3,
+      "corrosion_risk": 0.2
+    }
+order: 2000

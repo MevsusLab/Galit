@@ -105,6 +105,8 @@ TREATMENT_STORAGE_PATH = Path(os.environ.get("GALIT_TREATMENT_STORAGE", "data/tr
 TREATMENTS = galit.TreatmentRepository(TREATMENT_STORAGE_PATH)
 PASSPORT_STORAGE_PATH = Path(os.environ.get("GALIT_PASSPORT_STORE", "data/well_passports.json"))
 PASSPORTS = galit.PassportRepository(PASSPORT_STORAGE_PATH)
+EQUIPMENT_STORAGE_PATH = Path(os.environ.get("GALIT_EQUIPMENT_STORAGE", "data/equipment.json"))
+EQUIPMENT = galit.EquipmentRepository(EQUIPMENT_STORAGE_PATH)
 
 
 # --------------------------------------------------------------------------
@@ -460,6 +462,11 @@ class TreatmentCreateIn(BaseModel):
     cost: float = Field(ge=0)
     currency: str = Field(min_length=3, max_length=3)
     treatment_type: str = Field(min_length=1)
+    field_name: str | None = None
+    cluster: str | None = None
+    site: str | None = None
+    rate_before_m3_day: float | None = Field(default=None, ge=0)
+    rate_after_m3_day: float | None = Field(default=None, ge=0)
     baseline_risk: float | None = Field(default=None, ge=0, le=1)
     baseline_state: str | None = None
     expected_result: str | None = None
@@ -490,6 +497,11 @@ class TreatmentUpdateIn(BaseModel):
     cost: float | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     treatment_type: str | None = Field(default=None, min_length=1)
+    field_name: str | None = None
+    cluster: str | None = None
+    site: str | None = None
+    rate_before_m3_day: float | None = Field(default=None, ge=0)
+    rate_after_m3_day: float | None = Field(default=None, ge=0)
     baseline_risk: float | None = Field(default=None, ge=0, le=1)
     baseline_state: str | None = None
     expected_result: str | None = None
@@ -525,6 +537,11 @@ class TreatmentOut(BaseModel):
     cost: float
     currency: str
     treatment_type: str
+    field_name: str | None
+    cluster: str | None
+    site: str | None
+    rate_before_m3_day: float | None
+    rate_after_m3_day: float | None
     status: galit.TreatmentStatus
     baseline_risk: float | None
     baseline_state: str | None
@@ -543,6 +560,66 @@ class TreatmentOut(BaseModel):
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class EquipmentMetadataIn(BaseModel):
+    well: str = Field(min_length=1)
+    lift_type: str = Field(min_length=1)
+    equipment_id: str | None = None
+    installed_at: datetime | None = None
+    runtime_days: float | None = Field(default=None, ge=0)
+    nominal_current_a: float | None = Field(default=None, gt=0)
+    temperature_limit_c: float | None = Field(default=None, gt=0)
+    vibration_limit_mm_s: float | None = Field(default=None, gt=0)
+    load_limit_kn: float | None = Field(default=None, gt=0)
+    pressure_unit: str = "mpa"
+    timezone_name: str = "UTC"
+
+    @field_validator("installed_at")
+    @classmethod
+    def aware_installation(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("installed_at must include a timezone offset")
+        return value
+
+
+class TelemetrySnapshotIn(BaseModel):
+    well: str = Field(min_length=1)
+    timestamp: datetime
+    lift_type: str = Field(min_length=1)
+    id: str | None = None
+    current_a: float | None = Field(default=None, ge=0)
+    nominal_current_a: float | None = Field(default=None, gt=0)
+    intake_pressure: float | None = Field(default=None, ge=0)
+    discharge_pressure: float | None = Field(default=None, ge=0)
+    wellhead_pressure: float | None = Field(default=None, ge=0)
+    baseline_intake_pressure: float | None = Field(default=None, ge=0)
+    baseline_discharge_pressure: float | None = Field(default=None, ge=0)
+    pressure_unit: str = "mpa"
+    motor_temperature_c: float | None = Field(default=None, ge=0)
+    fluid_temperature_c: float | None = Field(default=None, ge=0)
+    bearing_temperature_c: float | None = Field(default=None, ge=0)
+    temperature_limit_c: float | None = Field(default=None, gt=0)
+    vibration_mm_s: float | None = Field(default=None, ge=0)
+    vibration_limit_mm_s: float | None = Field(default=None, gt=0)
+    rod_load_kn: float | None = Field(default=None, ge=0)
+    load_limit_kn: float | None = Field(default=None, gt=0)
+    strokes_per_min: float | None = Field(default=None, ge=0)
+    dynamic_level_m: float | None = Field(default=None, ge=0)
+    baseline_dynamic_level_m: float | None = Field(default=None, ge=0)
+    fillage_fraction: float | None = Field(default=None, ge=0, le=1)
+    sand_fraction: float | None = Field(default=None, ge=0, le=1)
+    halite_risk: float | None = Field(default=None, ge=0, le=1)
+    calcite_risk: float | None = Field(default=None, ge=0, le=1)
+    wax_risk: float | None = Field(default=None, ge=0, le=1)
+    corrosion_risk: float | None = Field(default=None, ge=0, le=1)
+
+    @field_validator("timestamp")
+    @classmethod
+    def aware_equipment_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamp must include a timezone offset")
+        return value
 
 
 class PassportEventCreateIn(BaseModel):
@@ -753,6 +830,87 @@ async def readiness() -> dict[str, Any]:
         "authentication": {"status": "not implemented", "roadmap": True},
         "evidence_labels": EVIDENCE_LABELS,
     }
+
+
+def _equipment_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, galit.EquipmentNotFoundError):
+        return HTTPException(404, detail=str(exc))
+    if isinstance(exc, galit.EquipmentConflictError):
+        return HTTPException(409, detail={"message": str(exc), "type": "conflict"})
+    if isinstance(exc, galit.EquipmentStorageError):
+        return HTTPException(503, detail={"message": str(exc), "type": "storage_error"})
+    return HTTPException(400, detail=str(exc))
+
+
+@app.post("/api/v1/equipment", status_code=201, response_model=None,
+          summary="Create or update equipment metadata")
+async def upsert_equipment(payload: EquipmentMetadataIn) -> dict[str, Any]:
+    try:
+        item = galit.EquipmentMetadata(**payload.model_dump())
+        return (await run_in_threadpool(EQUIPMENT.upsert_equipment, item)).to_dict()
+    except (ValueError, galit.EquipmentStorageError) as exc:
+        raise _equipment_error(exc) from exc
+
+
+@app.get("/api/v1/equipment", response_model=None, summary="List equipment metadata")
+async def list_equipment() -> list[dict[str, Any]]:
+    try:
+        return [item.to_dict() for item in await run_in_threadpool(EQUIPMENT.list_equipment)]
+    except galit.EquipmentStorageError as exc:
+        raise _equipment_error(exc) from exc
+
+
+@app.post("/api/v1/equipment/telemetry", status_code=201, response_model=None,
+          summary="Ingest one idempotent telemetry snapshot")
+async def ingest_equipment_telemetry(payload: TelemetrySnapshotIn) -> dict[str, Any]:
+    try:
+        item = galit.TelemetrySnapshot(**payload.model_dump())
+        return (await run_in_threadpool(EQUIPMENT.ingest, item)).to_dict()
+    except (ValueError, galit.EquipmentConflictError, galit.EquipmentStorageError) as exc:
+        raise _equipment_error(exc) from exc
+
+
+@app.get("/api/v1/equipment/telemetry", response_model=None, summary="List telemetry snapshots")
+async def list_equipment_telemetry(well: str | None = None) -> list[dict[str, Any]]:
+    try:
+        return [item.to_dict() for item in await run_in_threadpool(EQUIPMENT.list_telemetry, well)]
+    except galit.EquipmentStorageError as exc:
+        raise _equipment_error(exc) from exc
+
+
+@app.get("/api/v1/equipment/forecast/{well}", response_model=None,
+         summary="Explainable ESP/rod-pump failure screening")
+async def equipment_forecast(well: str) -> dict[str, Any]:
+    try:
+        return (await run_in_threadpool(EQUIPMENT.forecast, well)).to_dict()
+    except (ValueError, galit.EquipmentNotFoundError, galit.EquipmentStorageError) as exc:
+        raise _equipment_error(exc) from exc
+
+
+@app.get("/api/v1/equipment/forecast", response_model=None,
+         summary="Equipment failure-risk portfolio")
+async def equipment_forecast_portfolio(lift_type: str | None = None,
+                                       risk_level: str | None = None) -> list[dict[str, Any]]:
+    try:
+        rows = await run_in_threadpool(EQUIPMENT.portfolio)
+        if lift_type:
+            lift = galit.normalize_lift(lift_type).value
+            rows = [row for row in rows if row.lift_type == lift]
+        if risk_level:
+            rows = [row for row in rows if row.risk_level == risk_level]
+        return [row.to_dict() for row in rows]
+    except (ValueError, galit.EquipmentStorageError) as exc:
+        raise _equipment_error(exc) from exc
+
+
+@app.get("/api/v1/equipment/maintenance", response_model=None,
+         summary="Maintenance priorities from equipment screening")
+async def equipment_maintenance() -> list[dict[str, Any]]:
+    try:
+        rows = await run_in_threadpool(EQUIPMENT.portfolio)
+        return [row.to_dict() for row in rows if row.risk_level in {"warning", "critical"}]
+    except galit.EquipmentStorageError as exc:
+        raise _equipment_error(exc) from exc
 
 
 @app.post(
@@ -1027,6 +1185,20 @@ async def treatment_analytics(
             TREATMENTS.list, well=well, complication_type=complication_type, currency=currency,
         )
         return await run_in_threadpool(galit.treatment_summary, records, group_by)
+    except (ValueError, galit.TreatmentStorageError) as exc:
+        raise _treatment_error(exc) from exc
+
+
+@app.get("/api/v1/treatments/analytics/effectiveness", response_model=None,
+         summary="Explain treatment effectiveness, outliers, cohorts and robust intervals")
+async def treatment_effectiveness(
+    well: str | None = None,
+    min_sample_size: int = Query(default=galit.DEFAULT_MIN_SAMPLE_SIZE, ge=2, le=1000),
+) -> dict[str, Any]:
+    try:
+        records = await run_in_threadpool(TREATMENTS.list, well=well)
+        return await run_in_threadpool(
+            galit.treatment_analytics, records, min_sample_size=min_sample_size)
     except (ValueError, galit.TreatmentStorageError) as exc:
         raise _treatment_error(exc) from exc
 

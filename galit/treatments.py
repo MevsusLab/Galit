@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
+import csv
+import io
 import json
 import math
 import os
@@ -86,6 +88,11 @@ class TreatmentRecord:
     cost: float
     currency: str
     treatment_type: str
+    field_name: str | None = None
+    cluster: str | None = None
+    site: str | None = None
+    rate_before_m3_day: float | None = None
+    rate_after_m3_day: float | None = None
     status: TreatmentStatus = TreatmentStatus.PLANNED
     baseline_risk: float | None = None
     baseline_state: str | None = None
@@ -111,7 +118,7 @@ class TreatmentRecord:
                      "reagent_name", "treatment_type", "source"):
             object.__setattr__(self, name, _text(str(getattr(self, name)), name))
         for name in ("reagent_id", "baseline_state", "expected_result", "actual_result",
-                     "comment", "well_group"):
+                     "comment", "well_group", "field_name", "cluster", "site"):
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _text(str(value), name))
@@ -136,6 +143,10 @@ class TreatmentRecord:
         if currency not in VALID_CURRENCIES:
             raise ValueError("currency must be one of BYN, RUB, USD, EUR")
         object.__setattr__(self, "currency", currency)
+        for name in ("rate_before_m3_day", "rate_after_m3_day"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _finite_non_negative(value, name))
         if self.baseline_risk is not None:
             risk = float(self.baseline_risk)
             if not math.isfinite(risk) or not 0 <= risk <= 1:
@@ -463,3 +474,122 @@ def compare_reagents(records: Iterable[TreatmentRecord], reagent_a: str, reagent
         "reason": reason,
         "warning": "Наблюдательная связь не доказывает причинность; скрытые различия групп не контролируются.",
     }
+
+
+CSV_COLUMNS = (
+    "id", "well_id", "well_name", "field_name", "cluster", "site", "event_at",
+    "complication_type", "treatment_type", "reagent_name", "reagent_id", "dosage",
+    "dosage_unit", "rate_before_m3_day", "rate_after_m3_day", "cost", "currency",
+    "effect_duration_days", "recurrence", "recurrence_date", "description", "comment", "source",
+)
+
+
+def treatment_effect(item: TreatmentRecord) -> dict[str, Any]:
+    """Explain one observed effect without inventing missing values or precision."""
+    before, after, days = item.rate_before_m3_day, item.rate_after_m3_day, item.effect_duration_days
+    delta = after - before if before is not None and after is not None else None
+    percent = delta / before * 100 if delta is not None and before not in (None, 0) else None
+    incremental = max(delta, 0.0) * days if delta is not None and days is not None else None
+    unit_cost = item.cost / incremental if incremental not in (None, 0.0) else None
+    missing = [name for name, value in (("rate_before_m3_day", before),
+               ("rate_after_m3_day", after), ("effect_duration_days", days)) if value is None]
+    if delta is None:
+        classification, explanation = "insufficient_data", "Нужны дебиты до и после обработки."
+    elif delta <= 0:
+        classification, explanation = "ineffective", "Дебит не вырос относительно измерения до обработки."
+    elif percent is not None and percent >= 10 and days is not None and days >= 14:
+        classification, explanation = "effective", "Рост не менее 10% сохранялся не менее 14 суток."
+    else:
+        classification, explanation = "limited_effect", "Положительный эффект есть, но пороги 10% и 14 суток не достигнуты или срок неизвестен."
+    return {"treatment_id": item.id, "classification": classification, "explanation": explanation,
+            "thresholds": {"rate_gain_percent": 10, "effect_duration_days": 14},
+            "rate_change_m3_day": delta, "rate_change_percent": percent,
+            "incremental_production_m3": incremental,
+            "cost_per_incremental_m3": unit_cost, "currency": item.currency,
+            "missing_inputs": missing}
+
+
+def treatment_analytics(records: Iterable[TreatmentRecord], *,
+                        min_sample_size: int = DEFAULT_MIN_SAMPLE_SIZE) -> dict[str, Any]:
+    """Portfolio analytics; cohorts retain field/mechanism context and sample size."""
+    if min_sample_size < 2:
+        raise ValueError("min_sample_size must be at least 2")
+    rows = [item for item in records if not item.archived]
+    effects = [treatment_effect(item) for item in rows]
+    ineffective = [effect["treatment_id"] for effect in effects if effect["classification"] == "ineffective"]
+    excessive: list[dict[str, Any]] = []
+    intervals: dict[tuple[str, str], list[float]] = {}
+    by_well: dict[str, list[TreatmentRecord]] = {}
+    for item in rows:
+        by_well.setdefault(item.well_id, []).append(item)
+        if item.recurrence_date:
+            intervals.setdefault((item.field_name or "unknown", item.complication_type), []).append(
+                (item.recurrence_date - item.event_at).total_seconds() / 86400)
+    for well_rows in by_well.values():
+        ordered = sorted(well_rows, key=lambda item: item.event_at)
+        for current, following in zip(ordered, ordered[1:]):
+            days = (following.event_at - current.event_at).total_seconds() / 86400
+            intervals.setdefault((current.field_name or "unknown", current.complication_type), []).append(days)
+            if days < 14 and treatment_effect(current)["classification"] in {"ineffective", "limited_effect"}:
+                excessive.append({"treatment_id": following.id, "interval_days": days,
+                                  "reason": "Повторная обработка раньше 14 суток после отсутствующего/ограниченного эффекта."})
+    cohorts: dict[tuple[str, str, str, str], list[TreatmentRecord]] = {}
+    for item in rows:
+        if item.rate_before_m3_day is not None and item.rate_after_m3_day is not None:
+            key = (item.field_name or "unknown", item.complication_type,
+                   item.treatment_type, item.reagent_name)
+            cohorts.setdefault(key, []).append(item)
+    comparisons = []
+    for key, items in sorted(cohorts.items()):
+        gains = [treatment_effect(item)["rate_change_percent"] for item in items]
+        comparisons.append({"field_name": key[0], "complication_type": key[1],
+                            "treatment_type": key[2], "reagent_name": key[3], "n": len(items),
+                            "status": "available" if len(items) >= min_sample_size else "insufficient_data",
+                            "median_rate_change_percent": statistics.median(gains) if len(items) >= min_sample_size else None})
+    recommendations = [{"field_name": key[0], "complication_type": key[1], "n": len(values),
+                        "status": "available" if len(values) >= min_sample_size else "insufficient_data",
+                        "median_interval_days": statistics.median(values) if len(values) >= min_sample_size else None}
+                       for key, values in sorted(intervals.items())]
+    return {"records": len(rows), "assessed_effects": sum(e["classification"] != "insufficient_data" for e in effects),
+            "effects": effects, "ineffective_treatment_ids": ineffective,
+            "potentially_excessive": excessive, "comparisons": comparisons,
+            "interval_recommendations": recommendations, "min_sample_size": min_sample_size,
+            "warning": "Наблюдательные данные показывают ассоциации, но не доказывают причинность. Валюты и единицы дозировки не объединяются."}
+
+
+def treatments_to_csv(records: Iterable[TreatmentRecord]) -> bytes:
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for item in records:
+        data = item.to_dict()
+        writer.writerow({key: "" if data.get(key) is None else data.get(key) for key in CSV_COLUMNS})
+    return stream.getvalue().encode("utf-8-sig")
+
+
+def treatments_from_csv(data: bytes, *, source: str = "csv_import") -> list[TreatmentRecord]:
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("treatment CSV must be UTF-8") from exc
+    reader = csv.DictReader(io.StringIO(text))
+    missing = set(CSV_COLUMNS[:17]) - set(reader.fieldnames or ())
+    if missing:
+        raise ValueError("treatment CSV missing columns: " + ", ".join(sorted(missing)))
+    result = []
+    for line, row in enumerate(reader, 2):
+        try:
+            optional_numbers = {key: (float(row[key]) if row.get(key, "").strip() else None)
+                                for key in ("rate_before_m3_day", "rate_after_m3_day")}
+            result.append(new_treatment(
+                well_id=row["well_id"], well_name=row["well_name"],
+                field_name=row.get("field_name") or None, cluster=row.get("cluster") or None,
+                site=row.get("site") or None, event_at=datetime.fromisoformat(row["event_at"]),
+                complication_type=row["complication_type"], treatment_type=row["treatment_type"],
+                reagent_name=row["reagent_name"], reagent_id=row.get("reagent_id") or None,
+                dosage=float(row["dosage"]), dosage_unit=row["dosage_unit"], cost=float(row["cost"]),
+                currency=row["currency"], description=row.get("description") or "CSV import",
+                comment=row.get("comment") or None, source=source, **optional_numbers))
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ValueError(f"treatment CSV row {line}: {exc}") from exc
+    return result

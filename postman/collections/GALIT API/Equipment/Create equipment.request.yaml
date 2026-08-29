@@ -1,0 +1,19 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/equipment'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "well": "Well-ESP-1",
+      "lift_type": "ESP",
+      "runtime_days": 120,
+      "nominal_current_a": 100,
+      "temperature_limit_c": 100,
+      "vibration_limit_mm_s": 10,
+      "pressure_unit": "mpa"
+    }
+order: 1000

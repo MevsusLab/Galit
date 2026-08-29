@@ -409,6 +409,7 @@ def test_apptest_upload_renders_master_plan_as_first_tab():
         "Что будет, если?",
         "Экономика риска",
         "Прогноз во времени",
+        "Оборудование / Прогноз отказов",
         "\u0421\u0440\u0430\u0432\u043d\u0435\u043d\u0438\u0435 \u0441 baseline / \u041f\u0438\u043b\u043e\u0442",
         "Цифровой паспорт",
         "Журнал мероприятий",
@@ -646,10 +647,11 @@ def test_apptest_demo_has_economics_and_forecast_tabs():
     button.click().run()
     assert not app.exception
     labels = [tab.label for tab in app.tabs]
-    assert len(labels) == 11
+    assert len(labels) == 12
     assert "Карта месторождения" in labels
     assert "Что будет, если?" in labels
     assert "Экономика риска" in labels and "Прогноз во времени" in labels
+    assert "Оборудование / Прогноз отказов" in labels
     assert labels[-1] == "Журнал мероприятий"
 
 

@@ -164,6 +164,7 @@ RECENT_DIAGNOSES = RecentDiagnosisStore()
 TELEGRAM_TEXT_LIMIT = 4096
 TREATMENTS = galit.TreatmentRepository(os.environ.get("GALIT_TREATMENT_STORAGE", "data/treatments.json"))
 PASSPORTS = galit.PassportRepository(os.environ.get("GALIT_PASSPORT_STORE", "data/well_passports.json"))
+EQUIPMENT = galit.EquipmentRepository(os.environ.get("GALIT_EQUIPMENT_STORAGE", "data/equipment.json"))
 
 
 PASSPORT_ALIASES = {
@@ -235,7 +236,11 @@ TREATMENT_ALIASES = {
     "days": "effect_duration_days", "duration": "effect_duration_days", "дни": "effect_duration_days",
     "recurrence": "recurrence", "повтор": "recurrence", "recurrence_date": "recurrence_date",
     "дата_повтора": "recurrence_date", "group": "well_group", "well_group": "well_group",
-    "группа": "well_group", "limit": "limit", "лимит": "limit", "min_n": "min_sample_size",
+    "группа": "well_group", "field": "field_name", "месторождение": "field_name",
+    "cluster": "cluster", "куст": "cluster", "site": "site", "участок": "site",
+    "before": "rate_before_m3_day", "дебит_до": "rate_before_m3_day",
+    "after": "rate_after_m3_day", "дебит_после": "rate_after_m3_day",
+    "limit": "limit", "лимит": "limit", "min_n": "min_sample_size",
 }
 
 
@@ -302,6 +307,23 @@ def resolve_treatment(repo: galit.TreatmentRepository, record_id: str) -> galit.
         raise
 
 
+def _effect_label(classification: str) -> str:
+    return {"effective": "эффективна", "limited_effect": "ограниченный эффект",
+            "ineffective": "неэффективна", "insufficient_data": "недостаточно данных"}.get(
+                classification, classification)
+
+
+def _format_effect(item: galit.TreatmentRecord) -> str:
+    effect = galit.treatment_effect(item)
+    delta = effect["rate_change_m3_day"]
+    percent = effect["rate_change_percent"]
+    change = "недостаточно данных"
+    if delta is not None:
+        change = f"{delta:+g} м³/сут" + ("" if percent is None else f" ({percent:+.1f}%)")
+    return (f"Оценка: <b>{html.escape(_effect_label(str(effect['classification'])))}</b>\n"
+            f"Изменение дебита: {change}\n{html.escape(str(effect['explanation']))}")
+
+
 def format_treatment_card(item: galit.TreatmentRecord) -> list[str]:
     e = html.escape
     metrics = ", ".join(f"{e(k)}={v:g}" for k, v in item.result_metrics.items()) or "—"
@@ -309,12 +331,15 @@ def format_treatment_card(item: galit.TreatmentRecord) -> list[str]:
     recurrence = "—" if item.recurrence is None else ("да" if item.recurrence else "нет")
     if item.recurrence_date:
         recurrence += f" ({item.recurrence_date.date().isoformat()})"
+    before = "—" if item.rate_before_m3_day is None else f"{item.rate_before_m3_day:g} м³/сут"
+    after = "—" if item.rate_after_m3_day is None else f"{item.rate_after_m3_day:g} м³/сут"
     blocks = [
         f"<b>Мероприятие {e(item.id[:8])}</b>",
         f"Скважина: {e(item.well_name)}\nОсложнение: {e(item.complication_type)}\n"
         f"Группа: {e(item.well_group or '—')}\nСтатус: <b>{item.status.value}</b> · revision={item.revision}",
         f"Описание: {e(item.description)}\nРеагент: {e(item.reagent_name)}\n"
         f"Доза: {item.dosage:g} {e(item.dosage_unit)}\nСтоимость: {item.cost:g} {e(item.currency)}",
+        f"Дебит до: {before}\nДебит после: {after}\n{_format_effect(item)}",
         f"Ожидание: {e(item.expected_result or '—')}\nФакт: {result}\nМетрики: {metrics}\n"
         f"Успех: {'—' if item.success is None else ('да' if item.success else 'нет')}\n"
         f"Длительность: {'—' if item.effect_duration_days is None else f'{item.effect_duration_days:g} сут'}\n"
@@ -328,10 +353,12 @@ def format_treatments(records: list[galit.TreatmentRecord]) -> list[str]:
         return ["Записей журнала не найдено."]
     blocks = ["<b>Мероприятия</b>"]
     for item in records:
-        effect = (f"успех={'да' if item.success else 'нет'}; {item.effect_duration_days:g} сут"
-                  if item.status is galit.TreatmentStatus.ASSESSED else "факт не оценён")
+        effect = galit.treatment_effect(item)
+        delta = effect["rate_change_m3_day"]
+        change = "дебит: недостаточно данных" if delta is None else f"Δ дебита {delta:+g} м³/сут"
         blocks.append(f"<code>{html.escape(item.id[:8])}</code> · {html.escape(item.well_name)} · "
-                      f"{html.escape(item.reagent_name)} · {item.status.value} · rev={item.revision}\n{html.escape(effect)}")
+                      f"{html.escape(item.reagent_name)} · {item.status.value} · rev={item.revision}\n"
+                      f"{html.escape(_effect_label(str(effect['classification'])))} · {change}")
     return _forecast_chunks(blocks)
 
 
@@ -357,16 +384,45 @@ def format_treatment_comparison(result: dict[str, object]) -> list[str]:
     return _forecast_chunks(blocks)
 
 
-def format_treatment_stats(records: list[galit.TreatmentRecord]) -> list[str]:
+def format_treatment_stats(records: list[galit.TreatmentRecord],
+                           min_sample_size: int = galit.DEFAULT_MIN_SAMPLE_SIZE) -> list[str]:
     summary = galit.treatment_summary(records, "reagent")
+    analytics = galit.treatment_analytics(records, min_sample_size=min_sample_size)
+    blocks = ["<b>Контроль обработок</b>",
+              f"Записей: {analytics['records']} · с измеримым эффектом: {analytics['assessed_effects']} · min_n={min_sample_size}"]
     if summary["status"] == "insufficient_data":
-        return ["insufficient_data: оценённых наблюдений пока нет."]
-    blocks = ["<b>Фактическая эффективность</b>"]
+        blocks.append("Эффективность реагентов: <b>недостаточно данных</b>.")
     for row in summary["groups"]:
         success = "—" if row["success_rate"] is None else f"{row['success_rate']:.0%}"
+        costs = ", ".join(f"{currency} {values['total']:g}" for currency, values in row["costs_by_currency"].items()) or "—"
         blocks.append(f"{html.escape(row['group'])}: n={row['assessed_observations']}; "
-                      f"успех={success}; confidence={row['confidence']}")
-    blocks.append(html.escape(summary["observational_warning"]))
+                      f"успех={success}; confidence={row['confidence']}; стоимость по валютам: {costs}")
+    ineffective = analytics["ineffective_treatment_ids"]
+    excessive = analytics["potentially_excessive"]
+    blocks.append("Неэффективные: " + (", ".join(html.escape(value[:8]) for value in ineffective) if ineffective else "не выявлены"))
+    blocks.append("Потенциально избыточные: " + (", ".join(html.escape(row["treatment_id"][:8]) for row in excessive) if excessive else "не выявлены"))
+    blocks.append("<b>Сопоставимые реагенты/технологии</b>")
+    comparisons = analytics["comparisons"]
+    if not comparisons:
+        blocks.append("Недостаточно данных: нет записей с дебитом до и после.")
+    for row in comparisons:
+        context = (f"{html.escape(row['field_name'])} · {html.escape(row['complication_type'])} · "
+                   f"{html.escape(row['treatment_type'])} · {html.escape(row['reagent_name'])}")
+        if row["status"] == "available":
+            blocks.append(f"{context}: n={row['n']}; median Δ={row['median_rate_change_percent']:+.1f}%")
+        else:
+            blocks.append(f"{context}: n={row['n']}; <b>недостаточно данных</b> (нужно {min_sample_size})")
+    blocks.append("<b>Оптимальный median-интервал</b>")
+    intervals = analytics["interval_recommendations"]
+    if not intervals:
+        blocks.append("Недостаточно данных: интервалы повторов не зарегистрированы.")
+    for row in intervals:
+        context = f"{html.escape(row['field_name'])} · {html.escape(row['complication_type'])}"
+        if row["status"] == "available":
+            blocks.append(f"{context}: n={row['n']}; median={row['median_interval_days']:g} сут")
+        else:
+            blocks.append(f"{context}: n={row['n']}; <b>недостаточно данных</b> (нужно {min_sample_size})")
+    blocks.append(html.escape(str(analytics["warning"])))
     return _forecast_chunks(blocks)
 
 
@@ -640,6 +696,34 @@ def format_scenario_messages(item: DiagnosedWell, values: dict[str, float | str 
         blocks.append("Предупреждения:\n" + "\n".join("• " + html.escape(x) for x in result.warnings))
     blocks.append("Screening score не является вероятностью; причинный эффект не обещается.")
     return _forecast_chunks(blocks)
+
+
+def format_equipment_messages(rows: list[galit.EquipmentForecast], *, title: str = "Оборудование") -> list[str]:
+    if not rows:
+        return ["Данных по оборудованию недостаточно. Загрузите metadata и телеметрию через сайт/API."]
+    blocks = [f"<b>{html.escape(title)}</b>"]
+    for row in rows[:20]:
+        risk = "—" if row.baseline_failure_risk is None else f"{row.baseline_failure_risk:.2f}"
+        rul = "недоступен" if row.rul_days is None else f"{row.rul_days[0]}–{row.rul_days[1]} сут"
+        causes = ", ".join(html.escape(x.label) for x in row.causes[:3]) or "данных недостаточно"
+        window = "—" if row.maintenance_window_start is None else (
+            f"{row.maintenance_window_start.date().isoformat()}–{row.maintenance_window_end.date().isoformat()}")
+        blocks.append(f"<b>{html.escape(row.well)}</b> · {html.escape(row.lift_type)}\n"
+                      f"baseline-риск {risk} · {html.escape(row.risk_level)} · RUL {rul}\n"
+                      f"Причины/аномалии: {causes}\nОбслуживание: {window} · {html.escape(row.urgency)}\n"
+                      f"Качество: {row.data_completeness:.0%} · confidence {html.escape(row.confidence)}")
+    blocks.append(html.escape(galit.EQUIPMENT_DISCLAIMER))
+    return _forecast_chunks(blocks)
+
+
+def parse_equipment_query(text: str) -> str:
+    try:
+        tokens = shlex.split(text, posix=True)[1:]
+    except ValueError as exc:
+        raise ValueError("ошибка кавычек: " + str(exc)) from exc
+    if len(tokens) > 1:
+        raise ValueError("укажите не более одного имени скважины")
+    return tokens[0].strip() if tokens else ""
 
 
 def format_plan_messages(items: list[DiagnosedWell], top: int = 10) -> list[str]:
@@ -983,26 +1067,24 @@ START_TEXT = (
 )
 HELP_TEXT = (
     "<b>Справка</b>\n\n"
-    "ГАЛИТ даёт предварительную оценку АСПО и подсказывает действие. "
-    "Результат требует инженерной проверки.\n\n"
-    "<b>Пошагово:</b> нажмите «🔎 Новый расчёт» и введите 6 значений: "
+    "ГАЛИТ даёт предварительную оценку; нужна проверка.\n\n"
+    "<b>Пошагово:</b> введите 6 значений: "
     "глубина (м), НКТ (мм), нефть и вода (м³/сут), газовый фактор "
     "(м³/м³), WAT (°C). Доступна отмена.\n\n"
     "<b>Быстрая команда</b>\n"
     "<code>/aspo глубина НКТ нефть вода ГФ WAT</code>\n"
     "Пример: <code>/aspo 3200 62 8 72 65 34</code>\n\n"
-    "Дополнительно: <code>скважина=</code>, <code>способ=</code>, "
-    "<code>парафин=</code>, <code>температура=</code>, "
-    "<code>градиент=</code>, <code>co2=</code>, <code>буферное=</code>. "
-    "Десятичный разделитель — точка или запятая.\n\n"
+    "Доп.: <code>скважина=</code>, <code>способ=</code>, <code>парафин=</code>, "
+    "<code>lat=</code>, <code>lon=</code>; точка или запятая.\n\n"
     "<b>Команды:</b> <code>/plan</code>, <code>/map</code>, <code>/forecast</code>, "
-    "<code>/economics</code>, <code>/plan_clear</code>. Карта: "
-    "<code>lat=52.37 lon=30.38</code>.\n"
+    "<code>/equipment</code>, <code>/failures</code>, <code>/maintenance</code>, "
+    "<code>/scenario</code>, <code>/economics</code>, <code>/plan_clear</code>.\n"
     "Паспорт: <code>/passport</code>, <code>/passport_history</code>, "
     "<code>/passport_add</code>, <code>/passport_rate</code>.\n"
-    "Сценарий: <code>/scenario oil_pct=-10 temperature=2 wash=yes</code>; "
-    "выбор: <code>well=Имя</code>; явный эффект: "
-    "<code>inhibitor_effect=0.8 source=паспорт</code>."
+    "Обработки: <code>/treatments</code>, <code>/treatment_add</code>, "
+    "<code>/treatment_result</code>, <code>/treatment_stats</code>, "
+    "<code>/treatment_compare</code>. Аргументы: key=value, пробелы — в кавычках; "
+    "<code>before=</code>/<code>after=</code> — м³/сут; валюты и единицы не смешиваются."
 )
 EXAMPLE_TEXT = (
     "<b>Пример исходных данных</b>\n\n"
@@ -1126,6 +1208,9 @@ async def cmd_treatment_add(message: Message) -> None:
             dosage_unit=values["dosage_unit"], cost=float(values["cost"].replace(",", ".")),
             currency=values["currency"], treatment_type=values["treatment_type"],
             expected_result=values.get("expected_result"), source="telegram", well_group=values.get("well_group"),
+            field_name=values.get("field_name"), cluster=values.get("cluster"), site=values.get("site"),
+            rate_before_m3_day=(float(values["rate_before_m3_day"].replace(",", "."))
+                                if values.get("rate_before_m3_day") else None),
         )
         saved = await asyncio.to_thread(TREATMENTS.create, record)
         await message.answer(f"План сохранён: <code>{html.escape(saved.id)}</code> · revision={saved.revision}.\n"
@@ -1187,6 +1272,8 @@ async def cmd_treatment_result(message: Message) -> None:
             success=parse_bool(values["success"], "success"),
             effect_duration_days=float(values["effect_duration_days"].replace(",", ".")),
             recurrence=recurrence, recurrence_date=recurrence_date,
+            rate_after_m3_day=(float(values["rate_after_m3_day"].replace(",", "."))
+                               if values.get("rate_after_m3_day") else record.rate_after_m3_day),
         )
         saved = await asyncio.to_thread(TREATMENTS.update, updated, expected_revision=revision)
         await message.answer(f"Фактический результат зафиксирован: <b>assessed</b> · revision={saved.revision}.")
@@ -1271,12 +1358,21 @@ async def cmd_treatment_cancel(message: Message) -> None:
 
 @dp.message(Command("treatment_stats"))
 async def cmd_treatment_stats(message: Message) -> None:
+    values, errors = parse_treatment_command(message.text or "")
+    allowed = {"well", "min_sample_size"}
+    unknown = sorted(set(values) - allowed)
+    if unknown:
+        errors.append("параметр не поддерживается: " + ", ".join(unknown))
+    if errors:
+        await message.answer("Параметры не приняты:\n· " + "\n· ".join(errors))
+        return
     try:
-        records = await asyncio.to_thread(TREATMENTS.list)
-        for chunk in format_treatment_stats(records):
+        min_n = int(values.get("min_sample_size", galit.DEFAULT_MIN_SAMPLE_SIZE))
+        records = await asyncio.to_thread(TREATMENTS.list, well=values.get("well"))
+        for chunk in format_treatment_stats(records, min_sample_size=min_n):
             await message.answer(chunk)
-    except galit.TreatmentStorageError as exc:
-        await message.answer(html.escape(str(exc)))
+    except (ValueError, galit.TreatmentStorageError) as exc:
+        await _answer_treatment_error(message, exc)
 
 
 @dp.message(Command("passport"))
@@ -1370,6 +1466,40 @@ async def cmd_map(message: Message) -> None:
     chat_id = message.chat.id if message.chat else 0
     for chunk in format_map_messages(RECENT_DIAGNOSES.get(chat_id)):
         await message.answer(chunk, disable_web_page_preview=True, reply_markup=MAIN_MENU)
+
+
+@dp.message(Command("equipment"))
+async def cmd_equipment(message: Message) -> None:
+    try:
+        query = parse_equipment_query(message.text or "")
+        rows = ([await asyncio.to_thread(EQUIPMENT.forecast, query)] if query
+                else await asyncio.to_thread(EQUIPMENT.portfolio))
+        for chunk in format_equipment_messages(rows):
+            await message.answer(chunk, disable_web_page_preview=True, reply_markup=MAIN_MENU)
+    except (ValueError, galit.EquipmentNotFoundError, galit.EquipmentStorageError) as exc:
+        await message.answer(html.escape(str(exc)), reply_markup=MAIN_MENU)
+
+
+@dp.message(Command("failures"))
+async def cmd_failures(message: Message) -> None:
+    try:
+        rows = [row for row in await asyncio.to_thread(EQUIPMENT.portfolio)
+                if row.risk_level in {"warning", "critical"}]
+        for chunk in format_equipment_messages(rows, title="Риски отказов ЭЦН/ШГН"):
+            await message.answer(chunk, reply_markup=MAIN_MENU)
+    except galit.EquipmentStorageError as exc:
+        await message.answer(html.escape(str(exc)))
+
+
+@dp.message(Command("maintenance"))
+async def cmd_maintenance(message: Message) -> None:
+    try:
+        rows = [row for row in await asyncio.to_thread(EQUIPMENT.portfolio)
+                if row.risk_level in {"warning", "critical"}]
+        for chunk in format_equipment_messages(rows, title="Приоритеты обслуживания"):
+            await message.answer(chunk, reply_markup=MAIN_MENU)
+    except galit.EquipmentStorageError as exc:
+        await message.answer(html.escape(str(exc)))
 
 
 @dp.message(Command("forecast"))

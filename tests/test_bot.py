@@ -360,3 +360,51 @@ def test_treatment_comparison_formatter_shows_cohort_n_insufficient_and_warning(
     assert "A: n=0" in text and "B: n=0" in text
     assert "Недостаточно данных" in text and "confidence: low" in text
     assert "не доказывает причинность" in text
+
+
+def test_treatment_card_and_list_explain_rate_change_and_nullable_values():
+    measured = _treatment(rate_before_m3_day=10, rate_after_m3_day=12,
+                          effect_duration_days=20, status=galit.TreatmentStatus.COMPLETED)
+    card = "\n".join(tb.format_treatment_card(measured))
+    listing = "\n".join(tb.format_treatments([measured]))
+    assert "Изменение дебита: +2 м³/сут (+20.0%)" in card
+    assert "эффективна" in card and "Δ дебита +2 м³/сут" in listing
+
+    missing = "\n".join(tb.format_treatment_card(_treatment()))
+    assert "Дебит до: —" in missing and "Дебит после: —" in missing
+    assert "недостаточно данных" in missing
+
+
+def test_treatment_stats_exposes_sample_gate_outliers_units_and_currency():
+    rows = [
+        _treatment(field_name="Поле <A>", rate_before_m3_day=10, rate_after_m3_day=9,
+                   effect_duration_days=5, status=galit.TreatmentStatus.COMPLETED),
+        _treatment(well_id="w-2", field_name="Поле <A>", rate_before_m3_day=10,
+                   rate_after_m3_day=11, effect_duration_days=5,
+                   status=galit.TreatmentStatus.COMPLETED, currency="USD"),
+    ]
+    chunks = tb.format_treatment_stats(rows, min_sample_size=5)
+    text = "\n".join(chunks)
+    assert all(len(chunk) <= tb.TELEGRAM_TEXT_LIMIT for chunk in chunks)
+    assert "Неэффективные:" in text and "Потенциально избыточные:" in text
+    assert "n=2" in text and "недостаточно данных" in text and "нужно 5" in text
+    assert "Поле &lt;A&gt;" in text
+    assert "валюты и единицы дозировки не объединяются" in text.casefold()
+
+
+def test_treatment_stats_empty_and_parser_errors_are_explicit():
+    text = "\n".join(tb.format_treatment_stats([], min_sample_size=5))
+    assert "недостаточно данных" in text.lower()
+    values, errors = tb.parse_treatment_command('/treatment_stats min_n=1 bad=2')
+    assert values["min_sample_size"] == "1"
+    assert any("неверный параметр" in error for error in errors)
+    _, errors = tb.parse_treatment_command('/treatment_add description="broken')
+    assert any("ошибка кавычек" in error for error in errors)
+
+
+def test_treatment_help_documents_argument_commands_and_measurement_units():
+    for command in ("/treatments", "/treatment_add", "/treatment_result",
+                    "/treatment_stats", "/treatment_compare"):
+        assert command in tb.HELP_TEXT
+    assert "key=value" in tb.HELP_TEXT and "before=" in tb.HELP_TEXT
+    assert "м³/сут" in tb.HELP_TEXT and "валюты и единицы" in tb.HELP_TEXT
