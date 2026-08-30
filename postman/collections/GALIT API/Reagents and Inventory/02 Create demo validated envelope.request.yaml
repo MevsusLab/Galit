@@ -1,0 +1,23 @@
+$kind: http-request
+method: PUT
+url: '{{base_url}}/api/v1/chemicals/envelopes/demo-envelope-f9'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "id": "demo-envelope-f9",
+      "product_id": "demo-inhibitor-f9",
+      "hazard": "halite",
+      "points": [
+        {"dose": 10, "unit": "g/m3", "effective": false},
+        {"dose": 25, "unit": "g/m3", "effective": true},
+        {"dose": 50, "unit": "g/m3", "effective": true}
+      ],
+      "validated": true,
+      "validation_reference": "SYNTHETIC-DEMO-LAB-REPORT-F9-NOT-FOR-FIELD-USE",
+      "conditions": "Synthetic demo evidence only; not field validation and not an industrial recommendation."
+    }

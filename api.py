@@ -107,6 +107,26 @@ PASSPORT_STORAGE_PATH = Path(os.environ.get("GALIT_PASSPORT_STORE", "data/well_p
 PASSPORTS = galit.PassportRepository(PASSPORT_STORAGE_PATH)
 EQUIPMENT_STORAGE_PATH = Path(os.environ.get("GALIT_EQUIPMENT_STORAGE", "data/equipment.json"))
 EQUIPMENT = galit.EquipmentRepository(EQUIPMENT_STORAGE_PATH)
+WATERCUT_STORAGE_PATH = Path(os.environ.get("GALIT_WATERCUT_STORAGE", "data/watercut.json"))
+WATERCUT = galit.WatercutRepository(WATERCUT_STORAGE_PATH)
+TWIN_EVENT_STORAGE_PATH = Path(os.environ.get("GALIT_TWIN_EVENT_STORAGE", "data/digital_twin_events.json"))
+TWIN_EVENTS = galit.ManualEventRepository(TWIN_EVENT_STORAGE_PATH)
+SMART_MAP_STORAGE_PATH = Path(os.environ.get("GALIT_SMART_MAP_STORAGE", "data/smart_map.json"))
+SMART_MAP = galit.SmartMapRepository(SMART_MAP_STORAGE_PATH)
+CHEMICAL_STORAGE_PATH = Path(os.environ.get("GALIT_CHEMICAL_STORAGE", "data/chemicals.json"))
+CHEMICALS = galit.ChemicalRepository(CHEMICAL_STORAGE_PATH)
+
+
+def get_smart_map_service() -> galit.SmartMapService:
+    return galit.SmartMapService(SMART_MAP)
+
+
+def get_twin_service() -> galit.DigitalTwinService:
+    """Build a lightweight aggregation service over the current repositories."""
+    return galit.build_default_service(
+        watercut=WATERCUT, equipment=EQUIPMENT, treatments=TREATMENTS,
+        passports=PASSPORTS, manual=TWIN_EVENTS,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -210,6 +230,55 @@ class WellCaseIn(BaseModel):
     longitude: float | None = Field(default=None, ge=-180, le=180, description="Долгота WGS84")
     cluster: str | None = Field(default=None, max_length=200, description="Куст")
     site: str | None = Field(default=None, max_length=200, description="Участок или месторождение")
+
+
+class CompatibilityWaterIn(BaseModel):
+    name: str = Field(default="water", min_length=1, max_length=200)
+    ions_mg_l: dict[str, Annotated[float, Field(ge=0.0)]] = Field(max_length=20)
+    ph: float = Field(ge=0.0, le=14.0)
+    t_c: float
+    p_pa: float = Field(ge=0.0)
+
+    @field_validator("ions_mg_l")
+    @classmethod
+    def compatibility_ions(cls, value: dict[str, float]) -> dict[str, float]:
+        unknown = sorted(set(value) - set(KNOWN_IONS))
+        if unknown:
+            raise ValueError("unsupported ions: " + ", ".join(unknown))
+        return value
+
+
+class CompatibilityProfilePointIn(BaseModel):
+    depth_m: float = Field(ge=0.0)
+    t_c: float
+    p_pa: float = Field(ge=0.0)
+
+
+class DoseResponsePointIn(BaseModel):
+    dose_mg_l: float = Field(ge=0.0)
+    maximum_supported_si: float
+
+
+class DoseResponseCurveIn(BaseModel):
+    product: str = Field(min_length=1, max_length=200)
+    mineral: str = Field(pattern="^(calcite|barite|gypsum|halite)$")
+    points: list[DoseResponsePointIn] = Field(min_length=2, max_length=100)
+    validated: bool
+    validation_reference: str = Field(min_length=1, max_length=500)
+
+
+class WaterCompatibilityRequest(BaseModel):
+    water_a: CompatibilityWaterIn
+    water_b: CompatibilityWaterIn
+    fractions_b: list[Annotated[float, Field(ge=0.0, le=1.0)]] | None = Field(
+        default=None, min_length=1, max_length=1001,
+        description="Fraction of water B; default is 0..1 inclusive at 0.01 step",
+    )
+    profile: list[CompatibilityProfilePointIn] | None = Field(
+        default=None, min_length=1, max_length=2000,
+    )
+    flow_direction: str = Field(default="bottom_to_surface", pattern="^(bottom_to_surface|surface_to_bottom)$")
+    dose_response: DoseResponseCurveIn | None = None
 
 
 class ForecastSnapshotIn(BaseModel):
@@ -562,6 +631,128 @@ class TreatmentOut(BaseModel):
     updated_at: datetime
 
 
+class ChemicalProductIn(BaseModel):
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    manufacturer: str = Field(min_length=1)
+    hazards: list[str] = Field(min_length=1)
+    compatible_with: list[str] = Field(default_factory=list)
+    density_kg_l: float | None = Field(default=None, gt=0)
+    price_per_kg: float | None = Field(default=None, ge=0)
+    currency: str | None = None
+    active: bool = True
+    notes: str | None = None
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class ChemicalPointIn(BaseModel):
+    dose: float = Field(ge=0)
+    unit: str = "kg/m3"
+    effective: bool
+
+
+class ChemicalEnvelopeIn(BaseModel):
+    id: str = Field(min_length=1)
+    product_id: str = Field(min_length=1)
+    hazard: str = Field(min_length=1)
+    points: list[ChemicalPointIn] = Field(min_length=1)
+    validated: bool
+    validation_reference: str | None = None
+    conditions: str = Field(min_length=1)
+    revision: int = Field(default=1, ge=1)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class ChemicalRecommendationIn(BaseModel):
+    hazards: list[str] = Field(min_length=1)
+    treated_fluid_m3_day: float = Field(ge=0)
+    oil_m3_day: float = Field(ge=0)
+
+
+class ChemicalLotIn(BaseModel):
+    id: str = Field(min_length=1)
+    product_id: str = Field(min_length=1)
+    received_at: datetime
+    expires_on: date
+    quantity: float = Field(gt=0)
+    unit: str = "kg"
+    unit_cost: float | None = Field(default=None, ge=0)
+    currency: str | None = None
+    idempotency_key: str = Field(min_length=1)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+    @field_validator("received_at")
+    @classmethod
+    def aware_received_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("received_at must include a timezone offset")
+        return value
+
+
+class ChemicalTransactionIn(BaseModel):
+    id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1)
+    product_id: str = Field(min_length=1)
+    lot_id: str = Field(min_length=1)
+    kind: str = Field(pattern="^(adjustment|expiry|release)$")
+    quantity: float = Field(gt=0)
+    unit: str = "kg"
+    occurred_at: datetime
+    reference: str = Field(min_length=1)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+    @field_validator("occurred_at")
+    @classmethod
+    def aware_transaction_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone offset")
+        return value
+
+
+class ChemicalConsumeIn(BaseModel):
+    product_id: str = Field(min_length=1)
+    quantity: float = Field(gt=0)
+    unit: str = "kg"
+    occurred_at: datetime
+    idempotency_key: str = Field(min_length=1)
+    reference: str = Field(min_length=1)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+    @field_validator("occurred_at")
+    @classmethod
+    def aware_consumed_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone offset")
+        return value
+
+
+class ChemicalReservationIn(BaseModel):
+    product_id: str = Field(min_length=1)
+    quantity: float = Field(gt=0)
+    unit: str = "kg"
+    required_on: date
+    idempotency_key: str = Field(min_length=1)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class ChemicalReleaseIn(BaseModel):
+    revision: int = Field(ge=1)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class ChemicalForecastIn(BaseModel):
+    product_id: str = Field(min_length=1)
+    as_of: date
+    horizon_days: int = Field(gt=0, le=3650)
+
+
+class ChemicalShortageIn(BaseModel):
+    product_id: str = Field(min_length=1)
+    as_of: date
+    lead_time_days: int = Field(ge=0)
+    safety_stock_days: int = Field(ge=0)
+
+
 class EquipmentMetadataIn(BaseModel):
     well: str = Field(min_length=1)
     lift_type: str = Field(min_length=1)
@@ -842,6 +1033,190 @@ def _equipment_error(exc: Exception) -> HTTPException:
     return HTTPException(400, detail=str(exc))
 
 
+def _chemical_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, galit.ChemicalNotFoundError):
+        return HTTPException(404, detail=str(exc))
+    if isinstance(exc, galit.ChemicalConflictError):
+        return HTTPException(409, detail={"message": str(exc), "type": "conflict"})
+    if isinstance(exc, galit.ChemicalStorageError):
+        return HTTPException(503, detail={"message": str(exc), "type": "storage_error"})
+    return HTTPException(400, detail=str(exc))
+
+
+@app.get("/api/v1/chemicals/products", response_model=None)
+async def chemical_products() -> list[dict[str, Any]]:
+    try:
+        return [x.to_dict() for x in await run_in_threadpool(CHEMICALS.list_products)]
+    except galit.ChemicalStorageError as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.put("/api/v1/chemicals/products/{product_id}", response_model=None)
+async def put_chemical_product(product_id: str, payload: ChemicalProductIn) -> dict[str, Any]:
+    try:
+        data = payload.model_dump(exclude={"expected_revision"})
+        if data["id"] != product_id:
+            raise ValueError("path and payload product ids must match")
+        item = galit.ChemicalProduct(**data)
+        saved = await run_in_threadpool(CHEMICALS.put_product, item, expected_revision=payload.expected_revision)
+        return saved.to_dict()
+    except (ValueError, galit.ChemicalConflictError, galit.ChemicalStorageError) as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.get("/api/v1/chemicals/envelopes", response_model=None)
+async def chemical_envelopes(product_id: str | None = None) -> list[dict[str, Any]]:
+    try:
+        return [x.to_dict() for x in await run_in_threadpool(CHEMICALS.list_envelopes, product_id)]
+    except galit.ChemicalStorageError as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.put("/api/v1/chemicals/envelopes/{envelope_id}", response_model=None)
+async def put_chemical_envelope(envelope_id: str, payload: ChemicalEnvelopeIn) -> dict[str, Any]:
+    try:
+        if envelope_id != payload.id:
+            raise ValueError("path and payload envelope ids must match")
+        points = tuple(galit.ChemicalDoseResponsePoint(galit.dose_to_kg_m3(x.dose, x.unit), x.effective) for x in payload.points)
+        item = galit.ChemicalDoseResponseEnvelope(payload.id, payload.product_id, payload.hazard, points, payload.validated, payload.validation_reference, payload.conditions, payload.revision)
+        saved = await run_in_threadpool(CHEMICALS.put_envelope, item, expected_revision=payload.expected_revision)
+        return saved.to_dict()
+    except (ValueError, galit.ChemicalNotFoundError, galit.ChemicalConflictError, galit.ChemicalStorageError) as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.post("/api/v1/chemicals/recommendations", response_model=None)
+async def chemical_recommendations(payload: ChemicalRecommendationIn) -> list[dict[str, Any]]:
+    try:
+        products, envelopes = await run_in_threadpool(CHEMICALS.list_products), await run_in_threadpool(CHEMICALS.list_envelopes)
+        rows = await run_in_threadpool(galit.recommend_products, products, envelopes, payload.hazards, payload.treated_fluid_m3_day, payload.oil_m3_day)
+        return [x.to_dict() for x in rows]
+    except (ValueError, galit.ChemicalStorageError) as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.get("/api/v1/chemicals/lots", response_model=None)
+async def chemical_lots(product_id: str | None = None) -> list[dict[str, Any]]:
+    try:
+        return [x.to_dict() for x in await run_in_threadpool(CHEMICALS.list_lots, product_id)]
+    except galit.ChemicalStorageError as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.post("/api/v1/chemicals/lots", status_code=201, response_model=None)
+async def add_chemical_lot(payload: ChemicalLotIn) -> dict[str, Any]:
+    try:
+        product = next((x for x in await run_in_threadpool(CHEMICALS.list_products) if x.id == payload.product_id), None)
+        if product is None:
+            raise galit.ChemicalNotFoundError(f"product {payload.product_id} not found")
+        quantity = galit.convert_quantity(payload.quantity, payload.unit, "kg", density_kg_l=product.density_kg_l)
+        lot = galit.StockLot(payload.id, payload.product_id, payload.received_at, payload.expires_on, quantity, payload.unit_cost, payload.currency)
+        saved = await run_in_threadpool(CHEMICALS.add_lot, lot, idempotency_key=payload.idempotency_key, expected_revision=payload.expected_revision)
+        return saved.to_dict()
+    except (ValueError, galit.ChemicalNotFoundError, galit.ChemicalConflictError, galit.ChemicalStorageError) as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.get("/api/v1/chemicals/transactions", response_model=None)
+async def chemical_transactions(product_id: str | None = None) -> list[dict[str, Any]]:
+    try:
+        return [x.to_dict() for x in await run_in_threadpool(CHEMICALS.list_transactions, product_id)]
+    except galit.ChemicalStorageError as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.post("/api/v1/chemicals/transactions", status_code=201, response_model=None)
+async def append_chemical_transaction(payload: ChemicalTransactionIn) -> dict[str, Any]:
+    try:
+        product = next((x for x in await run_in_threadpool(CHEMICALS.list_products) if x.id == payload.product_id), None)
+        if product is None:
+            raise galit.ChemicalNotFoundError(f"product {payload.product_id} not found")
+        quantity = galit.convert_quantity(payload.quantity, payload.unit, "kg", density_kg_l=product.density_kg_l)
+        item = galit.StockTransaction(payload.id, payload.idempotency_key, payload.product_id, payload.lot_id, payload.kind, quantity, payload.occurred_at, payload.reference)
+        saved = await run_in_threadpool(CHEMICALS.append_transaction, item, expected_revision=payload.expected_revision)
+        return saved.to_dict()
+    except (ValueError, galit.ChemicalNotFoundError, galit.ChemicalConflictError, galit.ChemicalStorageError) as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.post("/api/v1/chemicals/consume", status_code=201, response_model=None)
+async def consume_chemical(payload: ChemicalConsumeIn) -> list[dict[str, Any]]:
+    try:
+        product = next((x for x in await run_in_threadpool(CHEMICALS.list_products) if x.id == payload.product_id), None)
+        if product is None:
+            raise galit.ChemicalNotFoundError(f"product {payload.product_id} not found")
+        quantity = galit.convert_quantity(payload.quantity, payload.unit, "kg", density_kg_l=product.density_kg_l)
+        rows = await run_in_threadpool(CHEMICALS.consume, payload.product_id, quantity, payload.occurred_at, idempotency_key=payload.idempotency_key, reference=payload.reference, expected_revision=payload.expected_revision)
+        return [x.to_dict() for x in rows]
+    except (ValueError, galit.ChemicalNotFoundError, galit.ChemicalConflictError, galit.ChemicalStorageError) as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.get("/api/v1/chemicals/stock/{product_id}", response_model=None)
+async def chemical_stock(product_id: str, as_of: date | None = None) -> dict[str, Any]:
+    try:
+        return await run_in_threadpool(CHEMICALS.stock, product_id, as_of=as_of)
+    except galit.ChemicalStorageError as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.get("/api/v1/chemicals/reservations", response_model=None)
+async def chemical_reservations(product_id: str | None = None) -> list[dict[str, Any]]:
+    try:
+        return [x.to_dict() for x in await run_in_threadpool(CHEMICALS.list_reservations, product_id)]
+    except galit.ChemicalStorageError as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.post("/api/v1/chemicals/reservations", status_code=201, response_model=None)
+async def reserve_chemical(payload: ChemicalReservationIn) -> dict[str, Any]:
+    try:
+        product = next((x for x in await run_in_threadpool(CHEMICALS.list_products) if x.id == payload.product_id), None)
+        if product is None:
+            raise galit.ChemicalNotFoundError(f"product {payload.product_id} not found")
+        quantity = galit.convert_quantity(payload.quantity, payload.unit, "kg", density_kg_l=product.density_kg_l)
+        saved = await run_in_threadpool(CHEMICALS.reserve, payload.product_id, quantity, payload.required_on, idempotency_key=payload.idempotency_key, expected_revision=payload.expected_revision)
+        return saved.to_dict()
+    except (ValueError, galit.ChemicalNotFoundError, galit.ChemicalConflictError, galit.ChemicalStorageError) as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.post("/api/v1/chemicals/reservations/{reservation_id}/release", response_model=None)
+async def release_chemical_reservation(reservation_id: str, payload: ChemicalReleaseIn) -> dict[str, Any]:
+    try:
+        saved = await run_in_threadpool(CHEMICALS.release_reservation, reservation_id, revision=payload.revision, expected_revision=payload.expected_revision)
+        return saved.to_dict()
+    except (galit.ChemicalNotFoundError, galit.ChemicalConflictError, galit.ChemicalStorageError) as exc:
+        raise _chemical_error(exc) from exc
+
+
+def _chemical_history(product_id: str) -> list[tuple[date, Any]]:
+    return [(x.occurred_at.date(), x.quantity_kg) for x in CHEMICALS.list_transactions(product_id) if x.kind == "consumption"]
+
+
+@app.post("/api/v1/chemicals/forecasts", response_model=None)
+async def chemical_forecast(payload: ChemicalForecastIn) -> dict[str, Any]:
+    try:
+        history = await run_in_threadpool(_chemical_history, payload.product_id)
+        return await run_in_threadpool(galit.deterministic_consumption_forecast, history, horizon_days=payload.horizon_days, as_of=payload.as_of)
+    except (ValueError, galit.ChemicalStorageError) as exc:
+        raise _chemical_error(exc) from exc
+
+
+@app.post("/api/v1/chemicals/shortages", response_model=None)
+async def chemical_shortage(payload: ChemicalShortageIn) -> dict[str, Any]:
+    try:
+        stock = await run_in_threadpool(CHEMICALS.stock, payload.product_id, as_of=payload.as_of)
+        history = await run_in_threadpool(_chemical_history, payload.product_id)
+        forecast = await run_in_threadpool(galit.deterministic_consumption_forecast, history, horizon_days=max(1, payload.lead_time_days + payload.safety_stock_days), as_of=payload.as_of)
+        if forecast["status"] != "available":
+            return {"status": "unavailable", "reason": forecast["reason"], "product_id": payload.product_id, "as_of": payload.as_of.isoformat()}
+        report = await run_in_threadpool(galit.shortage_report, stock["available_kg"], forecast["daily_kg"], lead_time_days=payload.lead_time_days, safety_stock_days=payload.safety_stock_days, as_of=payload.as_of)
+        return {"status": "available", "product_id": payload.product_id, **report}
+    except (ValueError, galit.ChemicalStorageError) as exc:
+        raise _chemical_error(exc) from exc
+
+
 @app.post("/api/v1/equipment", status_code=201, response_model=None,
           summary="Create or update equipment metadata")
 async def upsert_equipment(payload: EquipmentMetadataIn) -> dict[str, Any]:
@@ -939,6 +1314,64 @@ async def diagnose_well(
     return _result_dict(result, include_metadata=include_metadata or include_uncertainty,
                         include_profiles=include_profiles,
                         include_uncertainty=include_uncertainty)
+
+
+def _compatibility_water(value: CompatibilityWaterIn) -> galit.CompatibilityWater:
+    return galit.CompatibilityWater(**value.model_dump())
+
+
+def _compatibility_response(result: galit.CompatibilityResult) -> dict[str, Any]:
+    return {
+        "model_version": result.model_version,
+        "units": dict(result.units),
+        "assumptions": list(result.assumptions),
+        "warnings": list(result.warnings),
+        "ratios": [{
+            "fraction_b": row.fraction_b,
+            "ratio_a_to_b": row.ratio_a_to_b,
+            "risk_score": row.risk_score,
+            "unsafe": row.unsafe,
+            "minerals": {name: asdict(screen) for name, screen in row.minerals.items()},
+        } for row in result.ratios],
+        "dangerous_ratio": {
+            "fraction_b": result.dangerous_fraction_b,
+            "ratio_a_to_b": result.dangerous_ratio_a_to_b,
+            "risk_score": result.dangerous_risk_score,
+        },
+        "unsafe_intervals": [asdict(item) for item in result.unsafe_intervals],
+        "deposition_locations": [asdict(item) for item in result.deposition_locations],
+        "inhibitor": asdict(result.inhibitor),
+    }
+
+
+@app.post(
+    "/api/v1/water-compatibility", response_model=None,
+    summary="Screen two-water compatibility and scale formation",
+    description=("Separately versioned engineering screening. Chemistry is never inferred; "
+                 "missing ions produce unavailable mineral results, and inhibitor dosage is "
+                 "returned only from a supplied validated monotonic product curve."),
+)
+async def water_compatibility_endpoint(payload: WaterCompatibilityRequest) -> dict[str, Any]:
+    try:
+        curve = None
+        if payload.dose_response is not None:
+            data = payload.dose_response.model_dump()
+            data["points"] = tuple(galit.DoseResponsePoint(**point) for point in data["points"])
+            curve = galit.DoseResponseCurve(**data)
+        profile = (tuple(galit.ProfilePoint(**point.model_dump()) for point in payload.profile)
+                   if payload.profile is not None else None)
+        result = await run_in_threadpool(
+            galit.water_compatibility,
+            _compatibility_water(payload.water_a),
+            _compatibility_water(payload.water_b),
+            payload.fractions_b,
+            profile,
+            payload.flow_direction,
+            curve,
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    return _compatibility_response(result)
 
 
 @app.post(
@@ -1445,6 +1878,356 @@ async def master_plan(
         "loss_methodology": loss_methodology,
         "advisory_notice": plan.advisory_notice,
     }
+
+
+class TwinMetricIn(BaseModel):
+    value: float | int | str | bool | None = None
+    unit: str | None = None
+    quality: str = "manual"
+
+
+class TwinManualEventIn(BaseModel):
+    source_record_id: str | None = Field(default=None, min_length=1, max_length=200)
+    well: str = Field(min_length=1, max_length=200)
+    field: str | None = Field(default=None, max_length=200)
+    cluster: str | None = Field(default=None, max_length=200)
+    site: str | None = Field(default=None, max_length=200)
+    reservoir: str | None = Field(default=None, max_length=200)
+    occurred_at: datetime
+    category: galit.EventCategory
+    event_type: str = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=1, max_length=500)
+    summary: str = Field(min_length=1, max_length=5000)
+    severity: str = Field(default="info", max_length=50)
+    status: str | None = Field(default=None, max_length=100)
+    metrics: dict[str, TwinMetricIn] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("occurred_at")
+    @classmethod
+    def aware_twin_date(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone offset")
+        return value
+
+
+class WatercutMetadataIn(BaseModel):
+    well: str = Field(min_length=1)
+    role: str = Field(pattern="^(producer|injector)$")
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    field_name: str | None = None
+    cluster: str | None = None
+    site: str | None = None
+    reservoir: str | None = None
+    zone: str | None = None
+    layer: str | None = None
+    commissioning_date: date | None = None
+
+
+class SmartMapWellIn(BaseModel):
+    display_name: str = Field(min_length=1)
+    field: str | None = None
+    cluster: str | None = None
+    site: str | None = None
+    reservoir: str | None = None
+    canonical_id: str | None = None
+
+
+class RiskObservationIn(BaseModel):
+    well: SmartMapWellIn
+    occurred_at: datetime
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    severities: dict[str, Annotated[float | None, Field(ge=0, le=1)]] = Field(default_factory=dict)
+    integrated_risk: float | None = Field(default=None, ge=0, le=1)
+    well_role: str = Field(default="unknown", pattern="^(producer|injector|unknown)$")
+    economic_loss: float | None = Field(default=None, ge=0)
+    economic_currency: str | None = None
+    economic_unit: str | None = None
+    source: str = Field(default="api", min_length=1)
+    source_record_id: str | None = None
+    source_quality: str = Field(default="unknown", pattern="^(good|questionable|poor|unknown)$")
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    observation_id: str | None = None
+
+    @field_validator("occurred_at")
+    @classmethod
+    def aware_risk_date(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone offset")
+        return value
+
+
+class InfrastructureFeatureIn(BaseModel):
+    type: str = Field(pattern="^Feature$")
+    id: str | None = None
+    geometry: dict[str, Any]
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class InfrastructureCollectionIn(BaseModel):
+    type: str = Field(pattern="^FeatureCollection$")
+    features: list[InfrastructureFeatureIn] = Field(min_length=1, max_length=1000)
+
+
+class ProductionHistoryIn(BaseModel):
+    well: str = Field(min_length=1)
+    timestamp: datetime
+    q_oil_m3d: float = Field(ge=0)
+    q_water_m3d: float = Field(ge=0)
+    id: str | None = None
+    liquid_rate_m3d: float | None = Field(default=None, ge=0)
+    water_cut: float | None = Field(default=None, ge=0)
+    water_cut_unit: str | None = None
+    pressure: float | None = Field(default=None, ge=0)
+    pressure_unit: str | None = None
+    choke: float | None = Field(default=None, ge=0)
+    downtime_hours: float | None = Field(default=None, ge=0)
+    status: str | None = None
+
+
+class InjectionHistoryIn(BaseModel):
+    well: str = Field(min_length=1)
+    timestamp: datetime
+    injection_rate_m3d: float = Field(ge=0)
+    id: str | None = None
+    injection_pressure: float | None = Field(default=None, ge=0)
+    pressure_unit: str | None = None
+    status: str | None = None
+
+
+def _watercut_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, galit.WatercutConflictError): return HTTPException(409, detail=str(exc))
+    if isinstance(exc, galit.WatercutNotFoundError): return HTTPException(404, detail=str(exc))
+    if isinstance(exc, galit.WatercutStorageError): return HTTPException(503, detail=str(exc))
+    return HTTPException(400, detail=str(exc))
+
+
+@app.put("/api/v1/watercut/metadata", response_model=None, summary="Upsert producer/injector metadata")
+async def upsert_watercut_metadata(payload: WatercutMetadataIn):
+    try: return (await run_in_threadpool(WATERCUT.upsert_metadata, galit.WellMetadata(**payload.model_dump()))).to_dict()
+    except Exception as exc: raise _watercut_error(exc) from exc
+
+
+@app.get("/api/v1/watercut/metadata", response_model=None, summary="List watercut well metadata")
+async def list_watercut_metadata(role: str | None = None):
+    try: return [x.to_dict() for x in await run_in_threadpool(WATERCUT.list_metadata, role)]
+    except Exception as exc: raise _watercut_error(exc) from exc
+
+
+@app.post("/api/v1/watercut/production", response_model=None, summary="Idempotent production-history ingest")
+async def ingest_watercut_production(payload: list[ProductionHistoryIn]):
+    if not payload: raise HTTPException(422, detail="at least one row is required")
+    try: return await run_in_threadpool(WATERCUT.ingest_production, [galit.ProductionHistory(**x.model_dump()) for x in payload])
+    except Exception as exc: raise _watercut_error(exc) from exc
+
+
+@app.get("/api/v1/watercut/production", response_model=None)
+async def list_watercut_production(well: str | None = None):
+    try: return [x.to_dict() for x in await run_in_threadpool(WATERCUT.list_production, well)]
+    except Exception as exc: raise _watercut_error(exc) from exc
+
+
+@app.post("/api/v1/watercut/injection", response_model=None, summary="Idempotent injection-history ingest")
+async def ingest_watercut_injection(payload: list[InjectionHistoryIn]):
+    if not payload: raise HTTPException(422, detail="at least one row is required")
+    try: return await run_in_threadpool(WATERCUT.ingest_injection, [galit.InjectionHistory(**x.model_dump()) for x in payload])
+    except Exception as exc: raise _watercut_error(exc) from exc
+
+
+@app.get("/api/v1/watercut/injection", response_model=None)
+async def list_watercut_injection(well: str | None = None):
+    try: return [x.to_dict() for x in await run_in_threadpool(WATERCUT.list_injection, well)]
+    except Exception as exc: raise _watercut_error(exc) from exc
+
+
+def _watercut_diagnoses():
+    metadata=WATERCUT.list_metadata(); production=WATERCUT.list_production(); injection=WATERCUT.list_injection(); injectors=[x for x in metadata if x.role=="injector"]
+    results=[]; errors=[]
+    for item in metadata:
+        if item.role!="producer": continue
+        try: results.append(galit.diagnose_watercut(item,production,injectors,injection))
+        except Exception as exc: errors.append({"well":item.well,"error":str(exc)})
+    return results,errors
+
+
+@app.get("/api/v1/watercut/diagnose/{well}", response_model=None, summary="Diagnose one producer")
+async def diagnose_watercut_endpoint(well: str):
+    try:
+        metadata=await run_in_threadpool(WATERCUT.list_metadata); producer=next((x for x in metadata if x.well.casefold()==well.casefold() and x.role=="producer"),None)
+        if producer is None: raise galit.WatercutNotFoundError(f"producer {well} not found")
+        result=await run_in_threadpool(galit.diagnose_watercut,producer,WATERCUT.list_production(),[x for x in metadata if x.role=="injector"],WATERCUT.list_injection())
+        return result.to_dict()
+    except Exception as exc: raise _watercut_error(exc) from exc
+
+
+@app.get("/api/v1/watercut/diagnose", response_model=None, summary="Partial-safe watercut portfolio")
+async def diagnose_watercut_portfolio():
+    try:
+        results,errors=await run_in_threadpool(_watercut_diagnoses)
+        return {"count":len(results),"items":[x.to_dict() for x in results],"errors":errors,"policy_version":galit.WATERCUT_POLICY_VERSION,"disclaimer":galit.WATERCUT_DISCLAIMER}
+    except Exception as exc: raise _watercut_error(exc) from exc
+
+
+@app.get("/api/v1/watercut/links", response_model=None, summary="Directional injector-to-producer screening links")
+async def watercut_links(top_n: int = Query(default=50, ge=1, le=500)):
+    try: return {"links":[x.to_dict() for x in await run_in_threadpool(galit.build_watercut_links,WATERCUT.list_metadata(),WATERCUT.list_production(),WATERCUT.list_injection(),top_n=top_n)],"disclaimer":galit.WATERCUT_DISCLAIMER}
+    except Exception as exc: raise _watercut_error(exc) from exc
+
+
+def _smart_map_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, galit.SmartMapNotFoundError): return HTTPException(404, detail=str(exc))
+    if isinstance(exc, galit.SmartMapConflictError): return HTTPException(409, detail=str(exc))
+    if isinstance(exc, galit.SmartMapStorageError): return HTTPException(503, detail=str(exc))
+    return HTTPException(400, detail=str(exc))
+
+
+def _map_filters(date_from=None, date_to=None, as_of=None, field=None, cluster=None,
+                 site=None, reservoir=None, well_role=None):
+    return {"date_from":date_from,"date_to":date_to,"as_of":as_of,"field":field,
+            "cluster":cluster,"site":site,"reservoir":reservoir,"well_role":well_role}
+
+
+@app.post("/api/v1/smart-map/observations", status_code=201, response_model=None)
+async def ingest_smart_map_observation(payload: RiskObservationIn):
+    try:
+        data=payload.model_dump(); data["well"]=galit.WellIdentity(**data["well"])
+        return (await run_in_threadpool(SMART_MAP.add_observation,galit.RiskObservation(**data))).to_dict()
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+@app.get("/api/v1/smart-map/observations", response_model=None)
+async def list_smart_map_observations(date_from: datetime | None=Query(default=None,alias="from"), date_to: datetime | None=Query(default=None,alias="to"),
+    field: str | None=None, cluster: str | None=None, site: str | None=None, reservoir: str | None=None,
+    well_role: str | None=None, offset: int=Query(default=0,ge=0), limit: int=Query(default=100,ge=1,le=1000)):
+    try:
+        rows=await run_in_threadpool(get_smart_map_service().observations,**_map_filters(date_from,date_to,None,field,cluster,site,reservoir,well_role))
+        return {"total":len(rows),"offset":offset,"limit":limit,"items":[x.to_dict() for x in rows[offset:offset+limit]]}
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+@app.get("/api/v1/smart-map/snapshot", response_model=None)
+async def smart_map_snapshot(as_of: datetime | None=None, mechanism: str="integrated", field: str | None=None,
+    cluster: str | None=None, site: str | None=None, reservoir: str | None=None, well_role: str | None=None):
+    try: return await run_in_threadpool(get_smart_map_service().snapshot,as_of=as_of,mechanism=mechanism,field=field,cluster=cluster,site=site,reservoir=reservoir,well_role=well_role)
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+@app.get("/api/v1/smart-map/groups", response_model=None)
+async def smart_map_groups(level: str="cluster", as_of: datetime | None=None, mechanism: str="integrated", field: str | None=None):
+    try: return {"items":await run_in_threadpool(get_smart_map_service().groups,level=level,as_of=as_of,mechanism=mechanism,field=field),"disclaimer":galit.SMART_MAP_DISCLAIMER}
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+@app.get("/api/v1/smart-map/hotspots", response_model=None)
+async def smart_map_hotspots(days: int=Query(default=30,ge=1,le=1095), min_wells: int=Query(default=3,ge=2,le=100),
+    distance_km: float=Query(default=3,gt=0,le=100), mechanism: str="integrated", as_of: datetime | None=None):
+    try: return {"items":await run_in_threadpool(get_smart_map_service().hotspots,days=days,min_wells=min_wells,distance_km=distance_km,mechanism=mechanism,as_of=as_of),"disclaimer":galit.SMART_MAP_DISCLAIMER}
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+@app.get("/api/v1/smart-map/frames", response_model=None)
+async def smart_map_frames(mechanism: str="integrated", limit: int=Query(default=24,ge=2,le=100)):
+    try: return {"items":await run_in_threadpool(get_smart_map_service().frames,mechanism=mechanism,max_frames=limit),"disclaimer":galit.SMART_MAP_DISCLAIMER}
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+@app.get("/api/v1/smart-map/spread", response_model=None)
+async def smart_map_spread(mechanism: str="integrated"):
+    try: return await run_in_threadpool(get_smart_map_service().spread,mechanism=mechanism)
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+@app.post("/api/v1/smart-map/infrastructure/import", status_code=201, response_model=None)
+async def import_smart_map_infrastructure(payload: InfrastructureCollectionIn):
+    try:
+        rows=galit.assets_from_geojson(payload.model_dump()); saved=[]
+        for row in rows: saved.append((await run_in_threadpool(SMART_MAP.upsert_asset,row)).to_dict())
+        return {"count":len(saved),"items":saved}
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+@app.get("/api/v1/smart-map/infrastructure", response_model=None)
+async def list_smart_map_infrastructure():
+    try: return {"items":[x.to_dict() for x in await run_in_threadpool(SMART_MAP.list_assets)]}
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+@app.delete("/api/v1/smart-map/infrastructure/{asset_id}", response_model=None)
+async def delete_smart_map_infrastructure(asset_id: str):
+    try: return (await run_in_threadpool(SMART_MAP.delete_asset,asset_id)).to_dict()
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+@app.get("/api/v1/smart-map/geojson", response_model=None)
+async def smart_map_geojson():
+    try:
+        service=get_smart_map_service(); infrastructure=await run_in_threadpool(service.infrastructure_geojson); snap=await run_in_threadpool(service.snapshot)
+        features=list(infrastructure["features"])+[{"type":"Feature","id":x["observation_id"],"geometry":{"type":"Point","coordinates":[x["longitude"],x["latitude"]]},"properties":{k:v for k,v in x.items() if k not in {"latitude","longitude"}}} for x in snap["points"]]
+        return {"type":"FeatureCollection","features":features}
+    except Exception as exc: raise _smart_map_error(exc) from exc
+
+
+def _twin_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, galit.TwinNotFoundError): return HTTPException(404, detail=str(exc))
+    if isinstance(exc, (galit.TwinAmbiguousError, galit.TwinConflictError)): return HTTPException(409, detail=str(exc))
+    if isinstance(exc, galit.TwinStorageError): return HTTPException(503, detail=str(exc))
+    return HTTPException(422, detail=str(exc))
+
+
+@app.get("/api/v1/twins", response_model=None, summary="List digital-twin wells")
+async def list_twins():
+    try: return {"items": await run_in_threadpool(get_twin_service().list_wells), "model_version": galit.DIGITAL_TWIN_MODEL_VERSION}
+    except Exception as exc: raise _twin_error(exc) from exc
+
+
+@app.get("/api/v1/twins/{well}/snapshot", response_model=None, summary="Digital-twin snapshot as of time")
+async def twin_snapshot(well: str, as_of: datetime | None = None, field: str | None = None,
+                        cluster: str | None = None, site: str | None = None, reservoir: str | None = None):
+    try:
+        result = await run_in_threadpool(get_twin_service().snapshot, well, as_of=as_of, field=field,
+                                         cluster=cluster, site=site, reservoir=reservoir)
+        return result.to_dict()
+    except Exception as exc: raise _twin_error(exc) from exc
+
+
+@app.get("/api/v1/twins/{well}/timeline", response_model=None, summary="Filter and page unified timeline")
+async def twin_timeline(well: str, date_from: datetime | None = Query(default=None, alias="from"),
+                        date_to: datetime | None = Query(default=None, alias="to"),
+                        category: list[galit.EventCategory] | None = Query(default=None),
+                        limit: int = Query(default=100, ge=1, le=1000), cursor: str | None = None,
+                        field: str | None = None, cluster: str | None = None,
+                        site: str | None = None, reservoir: str | None = None):
+    try:
+        return await run_in_threadpool(get_twin_service().timeline, well, date_from=date_from, date_to=date_to,
+                                       categories=category, limit=limit, cursor=cursor, field=field,
+                                       cluster=cluster, site=site, reservoir=reservoir)
+    except Exception as exc: raise _twin_error(exc) from exc
+
+
+@app.get("/api/v1/twins/{well}/changes", response_model=None, summary="Explain chronological changes without causal claims")
+async def twin_changes(well: str, as_of: datetime | None = None, limit: int = Query(default=20, ge=1, le=100),
+                       field: str | None = None, cluster: str | None = None,
+                       site: str | None = None, reservoir: str | None = None):
+    try:
+        rows = await run_in_threadpool(get_twin_service().changes, well, as_of=as_of, limit=limit,
+                                       field=field, cluster=cluster, site=site, reservoir=reservoir)
+        return {"items": [x.to_dict() for x in rows], "disclaimer": galit.ASSOCIATION_DISCLAIMER}
+    except Exception as exc: raise _twin_error(exc) from exc
+
+
+@app.post("/api/v1/twins/events", status_code=201, response_model=None, summary="Create idempotent manual twin event")
+async def create_twin_event(payload: TwinManualEventIn):
+    try:
+        identity = galit.WellIdentity(payload.well, payload.field, payload.cluster, payload.site, payload.reservoir)
+        metrics = {key: galit.MetricValue(**value.model_dump()) for key, value in payload.metrics.items()}
+        event = galit.manual_event(well=identity, occurred_at=payload.occurred_at, category=payload.category,
+                                   event_type=payload.event_type, title=payload.title, summary=payload.summary,
+                                   source_record_id=payload.source_record_id, severity=payload.severity,
+                                   status=payload.status, metrics=metrics, metadata=payload.metadata)
+        return (await run_in_threadpool(TWIN_EVENTS.add, event)).to_dict()
+    except Exception as exc: raise _twin_error(exc) from exc
 
 
 if __name__ == "__main__":

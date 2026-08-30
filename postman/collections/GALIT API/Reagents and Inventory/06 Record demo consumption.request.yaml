@@ -1,0 +1,18 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/chemicals/consume'
+order: 6000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "product_id": "demo-inhibitor-f9",
+      "quantity": 3,
+      "unit": "kg",
+      "occurred_at": "2026-08-23T15:00:00+00:00",
+      "idempotency_key": "demo-f9-consumption-v1",
+      "reference": "SYNTHETIC-DEMO-TREATMENT-F9"
+    }

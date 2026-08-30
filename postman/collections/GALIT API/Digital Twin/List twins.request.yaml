@@ -1,0 +1,10 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/twins'
+order: 1000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('Status is 200', () => pm.response.to.have.status(200));
+      pm.test('Has items array', () => pm.expect(pm.response.json().items).to.be.an('array'));

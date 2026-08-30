@@ -25,10 +25,12 @@ import io
 import json
 import math
 import os
-from dataclasses import replace
-from datetime import datetime, timezone
+from dataclasses import asdict, replace
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -213,6 +215,15 @@ def background_data_uri(path: Path = BACKGROUND_ASSET) -> str:
 # ==========================================================================
 
 ION_KEYS = ["Na", "Cl", "Ca", "Mg", "K", "Ba", "Sr", "Fe", "HCO3", "SO4", "CO3"]
+
+COMPATIBILITY_MINERAL_RU = {
+    "calcite": "Кальцит",
+    "barite": "Барит",
+    "gypsum": "Гипс",
+    "halite": "Галит",
+}
+COMPATIBILITY_META_COLUMNS = ["name", "ph", "t_c", "p_pa"]
+COMPATIBILITY_COLUMNS = COMPATIBILITY_META_COLUMNS + ION_KEYS
 
 # Колонки, обязательные для расчёта
 REQUIRED_COLUMNS = [
@@ -1001,6 +1012,132 @@ def template_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def compatibility_template_frame() -> pd.DataFrame:
+    """Пустой двухстрочный контракт; химия намеренно не подставляется."""
+    return pd.DataFrame([
+        {"name": "Вода A", "ph": pd.NA, "t_c": pd.NA, "p_pa": pd.NA,
+         **{ion: pd.NA for ion in ION_KEYS}},
+        {"name": "Вода B", "ph": pd.NA, "t_c": pd.NA, "p_pa": pd.NA,
+         **{ion: pd.NA for ion in ION_KEYS}},
+    ], columns=COMPATIBILITY_COLUMNS)
+
+
+def compatibility_template_bytes() -> bytes:
+    """XLSX-шаблон именно для двух измеренных анализов воды."""
+    instructions = pd.DataFrame([
+        {"Поле": "name", "Единица": "—", "Описание": "Название воды; обязательно"},
+        {"Поле": "ph", "Единица": "—", "Описание": "Измеренный pH, 0…14; обязательно"},
+        {"Поле": "t_c", "Единица": "°C", "Описание": "Температура анализа; обязательно"},
+        {"Поле": "p_pa", "Единица": "Па", "Описание": "Давление анализа, неотрицательное; обязательно"},
+        {"Поле": "Na…CO3", "Единица": "мг/л", "Описание": "Только измеренные ионы; пусто означает «нет данных», не ноль"},
+    ])
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        compatibility_template_frame().to_excel(writer, sheet_name="Две воды", index=False)
+        instructions.to_excel(writer, sheet_name="Инструкция", index=False)
+    return buffer.getvalue()
+
+
+def compatibility_waters_from_frame(df: pd.DataFrame) -> tuple[galit.CompatibilityWater, galit.CompatibilityWater]:
+    """Строго преобразовать ровно две строки без типовой/синтетической химии."""
+    if len(df) != 2:
+        raise ValueError("нужны ровно две строки: вода A и вода B")
+    missing = [column for column in COMPATIBILITY_META_COLUMNS if column not in df.columns]
+    if missing:
+        raise ValueError("нет обязательных колонок: " + ", ".join(missing))
+    waters = []
+    for index, (_, row) in enumerate(df.iterrows(), start=1):
+        name = str(row["name"]).strip() if not pd.isna(row["name"]) else ""
+        if not name:
+            raise ValueError(f"строка {index}: укажите название воды")
+        required = {}
+        for column in ("ph", "t_c", "p_pa"):
+            value = pd.to_numeric(pd.Series([row[column]]), errors="coerce").iloc[0]
+            if pd.isna(value) or not math.isfinite(float(value)):
+                raise ValueError(f"«{name}»: укажите числовое значение {column}")
+            required[column] = float(value)
+        ions: dict[str, float] = {}
+        for ion in ION_KEYS:
+            if ion not in df.columns or pd.isna(row[ion]) or str(row[ion]).strip() == "":
+                continue
+            value = pd.to_numeric(pd.Series([row[ion]]), errors="coerce").iloc[0]
+            if pd.isna(value) or not math.isfinite(float(value)):
+                raise ValueError(f"«{name}»: {ion} должно быть числом")
+            ions[ion] = float(value)
+        if not ions:
+            raise ValueError(f"«{name}»: внесите хотя бы один измеренный ион")
+        waters.append(galit.CompatibilityWater(
+            ions, required["ph"], required["t_c"], required["p_pa"], name,
+        ))
+    return waters[0], waters[1]
+
+
+def compatibility_profile_from_frame(df: pd.DataFrame) -> tuple[galit.ProfilePoint, ...]:
+    """Преобразовать измеренный профиль; пустые строки игнорируются."""
+    points = []
+    for index, (_, row) in enumerate(df.iterrows(), start=1):
+        values = [row.get("depth_m"), row.get("t_c"), row.get("p_pa")]
+        if all(pd.isna(value) or str(value).strip() == "" for value in values):
+            continue
+        numeric = pd.to_numeric(pd.Series(values), errors="coerce")
+        if numeric.isna().any():
+            raise ValueError(f"профиль, строка {index}: заполните глубину, температуру и давление")
+        points.append(galit.ProfilePoint(*map(float, numeric)))
+    return tuple(points)
+
+
+def compatibility_curve_from_frame(product: str, mineral: str, reference: str,
+                                   validated: bool, df: pd.DataFrame) -> galit.DoseResponseCurve:
+    """Создать кривую только после явного подтверждения лабораторной валидации."""
+    if not validated:
+        raise ValueError("подтвердите, что кривая валидирована лабораторией для этих вод и условий")
+    points = []
+    for index, (_, row) in enumerate(df.iterrows(), start=1):
+        values = [row.get("dose_mg_l"), row.get("maximum_supported_si")]
+        if all(pd.isna(value) or str(value).strip() == "" for value in values):
+            continue
+        numeric = pd.to_numeric(pd.Series(values), errors="coerce")
+        if numeric.isna().any():
+            raise ValueError(f"кривая дозы, строка {index}: заполните оба значения")
+        points.append(galit.DoseResponsePoint(*map(float, numeric)))
+    return galit.DoseResponseCurve(product, mineral, tuple(points), True, reference)
+
+
+def compatibility_ratio_frame(result: galit.CompatibilityResult) -> pd.DataFrame:
+    """Плоские данные четырёх SI для таблицы и Plotly."""
+    return pd.DataFrame([{
+        "Доля воды B, %": row.fraction_b * 100,
+        "A:B": row.ratio_a_to_b,
+        **{COMPATIBILITY_MINERAL_RU[mineral]: row.minerals[mineral].saturation_index
+           for mineral in galit.compatibility.SUPPORTED_MINERALS},
+        "Небезопасно": row.unsafe,
+    } for row in result.ratios])
+
+
+def fig_compatibility_ratios(result: galit.CompatibilityResult) -> go.Figure:
+    """SI по доле B: четыре минерала и явная линия равновесия SI=0."""
+    frame = compatibility_ratio_frame(result)
+    colors = [GREEN_700, "#6D4C41", "#C47F00", "#546E7A"]
+    fig = go.Figure()
+    for (mineral, label), color in zip(COMPATIBILITY_MINERAL_RU.items(), colors):
+        fig.add_trace(go.Scatter(
+            x=frame["Доля воды B, %"], y=frame[label], mode="lines", name=label,
+            line=dict(width=2.5, color=color), connectgaps=False,
+            hovertemplate=f"{label}: %{{y:.3f}}<br>Вода B: %{{x:.0f}}%<extra></extra>",
+        ))
+    fig.add_hline(y=0, line_dash="dash", line_color=STATUS_CRIT,
+                  annotation_text="SI = 0 — граница пересыщения")
+    fig.update_layout(
+        xaxis_title="Доля воды B в смеси, %", yaxis_title="Индекс насыщения SI",
+        font=dict(family=FONT_FAMILY, color=INK), paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF", hovermode="x unified", height=430,
+        margin=dict(l=20, r=20, t=35, b=20), legend=dict(orientation="h", y=1.12),
+    )
+    fig.update_xaxes(range=[0, 100], gridcolor=BORDER)
+    fig.update_yaxes(gridcolor=BORDER)
+    return fig
+
+
 def pilot_template_bytes() -> bytes:
     """XLSX contract for prospective outcomes and three frozen strategies."""
     columns = [row["field"] for row in pilot_contract_frame()]
@@ -1648,6 +1785,81 @@ def field_map_viewport(data: galit.FieldMapData) -> tuple[dict[str, float], floa
     return center, max(6.0, min(10.5, zoom))
 
 
+def smart_map_service(items: list[DiagnosedWell] | None = None,
+                      occurred_at: datetime | None = None) -> galit.SmartMapService:
+    """Combine the current diagnosis slice with persisted history, without copying sources."""
+    configured = Path(os.environ.get("GALIT_SMART_MAP_STORAGE", "data/smart_map.json"))
+    path = configured if configured.is_absolute() else PROJECT_ROOT / configured
+    observations = []
+    for item in items or []:
+        if galit.valid_coordinates(item.case.latitude, item.case.longitude):
+            observations.append(galit.observation_from_diagnosed(
+                item, occurred_at or datetime.now(timezone.utc), source="dashboard_current_slice"
+            ))
+    return galit.SmartMapService(galit.SmartMapRepository(path), observations=observations)
+
+
+def fig_smart_map(snapshot: dict[str, Any], *, infrastructure: dict[str, Any] | None = None,
+                  hotspots: list[dict[str, Any]] | None = None, frames: list[dict[str, Any]] | None = None,
+                  show_heatmap: bool = True, show_markers: bool = True) -> go.Figure:
+    """Plotly 6.9 token-free Densitymap + Scattermap with persistent base layers."""
+    points = snapshot.get("points", [])
+    dummy = galit.FieldMapData((), galit.FieldMapSummary(0, 0, 0, 0, 0, {}, None))
+    if points:
+        center = {"lat": sum(x["latitude"] for x in points)/len(points),
+                  "lon": sum(x["longitude"] for x in points)/len(points)}
+        zoom = 8.2
+    else:
+        center, zoom = field_map_viewport(dummy)
+    fig = go.Figure()
+    fig.add_trace(go.Scattermap(lat=PRIPYAT_OVERVIEW_LAT, lon=PRIPYAT_OVERVIEW_LON,
+        mode="lines", fill="toself", name="Припятский прогиб · обзорно",
+        line={"color":"rgba(15,107,67,.62)","width":2}, fillcolor="rgba(61,139,102,.10)", hoverinfo="skip"))
+    if show_heatmap and points:
+        fig.add_trace(go.Densitymap(lat=[x["latitude"] for x in points],lon=[x["longitude"] for x in points],
+            z=[x["heat_weight"] for x in points],radius=28,name="Концентрация риска",
+            colorscale=[[0,"rgba(255,255,178,.15)"],[.45,"#FDBB2D"],[1,"#B02020"]],showscale=True,
+            colorbar={"title":"нормир. вклад"},hoverinfo="skip"))
+    if infrastructure:
+        for feature in infrastructure.get("features", []):
+            geometry=feature["geometry"]; props=feature.get("properties",{}); coordinates=geometry["coordinates"]
+            if geometry["type"]=="Point":
+                fig.add_trace(go.Scattermap(lat=[coordinates[1]],lon=[coordinates[0]],mode="markers",name="Объекты GIS",
+                    marker={"size":13,"symbol":"square","color":"#0E7490"},text=[props.get("name","Объект")],
+                    hovertemplate="<b>%{text}</b><br>Тип: "+str(props.get("asset_type","—"))+"<br>Статус: "+str(props.get("status","—"))+"<extra></extra>"))
+            else:
+                segments=coordinates if geometry["type"]=="MultiLineString" else [coordinates]
+                for segment in segments:
+                    fig.add_trace(go.Scattermap(lat=[x[1] for x in segment],lon=[x[0] for x in segment],mode="lines",name="Трубопроводы GIS",
+                        line={"width":4,"color":"#475569"},text=[props.get("name","Линия")]*len(segment),hovertemplate="%{text}<extra></extra>"))
+    for zone in hotspots or []:
+        c=zone["centroid"]; fig.add_trace(go.Scattermap(lat=[c["latitude"]],lon=[c["longitude"]],mode="markers+text",
+            text=[f"Зона · {len(zone['member_wells'])}"],textposition="top center",name="Системная зона",
+            marker={"size":max(24,zone["radius_km"]*15),"color":"rgba(176,32,32,.28)"},
+            hovertemplate="%{text}<br>confidence: "+zone["confidence"]+"<extra></extra>"))
+    if show_markers:
+        symbols={"producer":"circle","injector":"triangle-up","unknown":"diamond"}
+        colors={"normal":"#246B2A","growing":"#B26A00","critical":"#B02020"}
+        for role in ("producer","injector","unknown"):
+            rows=[x for x in points if x["well_role"]==role]
+            fig.add_trace(go.Scattermap(lat=[x["latitude"] for x in rows],lon=[x["longitude"] for x in rows],mode="markers",name=role,
+                text=[x["well"]["display_name"] for x in rows],customdata=[[x["selected_severity"],x["status"],x["occurred_at"],x["source_quality"]] for x in rows],
+                marker={"size":14,"symbol":symbols[role],"color":[colors[x["status"]] for x in rows],"opacity":.9},
+                hovertemplate="<b>%{text}</b><br>Тяжесть: %{customdata[0]:.2f}<br>Статус: %{customdata[1]}<br>Дата: %{customdata[2]}<br>Качество: %{customdata[3]}<extra></extra>"))
+    plot_frames=[]
+    for frame in frames or []:
+        rows=frame.get("points",[])
+        plot_frames.append(go.Frame(name=frame["date"],data=[go.Scattermap(lat=[x["latitude"] for x in rows],lon=[x["longitude"] for x in rows],
+            mode="markers",marker={"size":14,"color":[x["selected_severity"] for x in rows],"cmin":0,"cmax":1,"colorscale":"YlOrRd"},text=[x["well"]["display_name"] for x in rows])]))
+    fig.frames=plot_frames
+    if plot_frames:
+        fig.update_layout(updatemenus=[{"type":"buttons","buttons":[{"label":"▶","method":"animate","args":[None,{"frame":{"duration":500,"redraw":True},"fromcurrent":True}]},{"label":"⏸","method":"animate","args":[[None],{"mode":"immediate"}]}]}],
+            sliders=[{"steps":[{"label":f.name,"method":"animate","args":[[f.name],{"mode":"immediate","frame":{"duration":0,"redraw":True}}]} for f in plot_frames]}])
+    fig.update_layout(map={"style":"open-street-map","center":center,"zoom":zoom},height=620,margin={"l":4,"r":4,"t":45,"b":4},
+        legend={"orientation":"h","y":1.02},uirevision="galit-smart-map-2")
+    return fig
+
+
 def fig_field_map(data: galit.FieldMapData) -> go.Figure:
     """Interactive token-free OSM tile map with risk semantics and regional context."""
     center, zoom = field_map_viewport(data)
@@ -1952,6 +2164,18 @@ def render_sidebar():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             help="Лист «Данные» — пример заполнения, лист «Инструкция» — все колонки",
         )
+        with st.expander("Совместимость двух вод: файл"):
+            compatibility_upload = st.file_uploader(
+                "Двухстрочный XLSX / CSV", type=["xlsx", "xls", "csv"],
+                key="compatibility-upload",
+                help="Скачайте специальный шаблон в разделе совместимости и заполните две строки.",
+            )
+            st.session_state["compatibility-upload-bytes"] = (
+                compatibility_upload.getvalue() if compatibility_upload is not None else None
+            )
+            st.session_state["compatibility-upload-name"] = (
+                compatibility_upload.name if compatibility_upload is not None else None
+            )
 
         if st.button("Демо-фонд (40 скважин)", key="btn_demo",
                      help="Синтетический фонд для знакомства с дашбордом"):
@@ -1993,6 +2217,96 @@ def render_sidebar():
         )
         st.caption(f"ГАЛИТ v{galit.__version__} · расчёт выполняется локально")
     return upload, production_mode, include_uncertainty
+
+
+def watercut_storage_path() -> Path:
+    configured = Path(os.environ.get("GALIT_WATERCUT_STORAGE", "data/watercut.json"))
+    return configured if configured.is_absolute() else PROJECT_ROOT / configured
+
+
+def get_watercut_repository() -> galit.WatercutRepository:
+    path = str(watercut_storage_path().resolve())
+    cached = st.session_state.get("watercut_repository")
+    if cached is None or str(cached.path.resolve()) != path:
+        cached = galit.WatercutRepository(path)
+        st.session_state["watercut_repository"] = cached
+    return cached
+
+
+def watercut_portfolio(repository: galit.WatercutRepository) -> list[galit.WatercutDiagnosis]:
+    metadata = repository.list_metadata(); production = repository.list_production(); injection = repository.list_injection()
+    injectors = [item for item in metadata if item.role == "injector"]
+    results = []
+    for producer in (item for item in metadata if item.role == "producer"):
+        try: results.append(galit.diagnose_watercut(producer, production, injectors, injection))
+        except ValueError: continue
+    return sorted(results, key=lambda item: ({"critical": 2, "growing": 1, "low": 0}.get(item.severity, -1), item.current_water_cut or 0), reverse=True)
+
+
+def fig_watercut_links(metadata: list[galit.WellMetadata], links: list[galit.WatercutLink]) -> go.Figure:
+    fig = go.Figure()
+    for role, symbol, color in (("producer", "circle", GREEN_700), ("injector", "diamond", "#1665A5")):
+        rows = [x for x in metadata if x.role == role and x.latitude is not None and x.longitude is not None]
+        fig.add_trace(go.Scattermap(lat=[x.latitude for x in rows], lon=[x.longitude for x in rows], text=[x.well for x in rows],
+                                    mode="markers", name="Добывающие" if role == "producer" else "Нагнетательные",
+                                    marker={"size": 12, "color": color, "symbol": symbol}, hovertemplate="%{text}<extra></extra>"))
+    for link in links:
+        fig.add_trace(go.Scattermap(lat=[link.injector_latitude, link.producer_latitude], lon=[link.injector_longitude, link.producer_longitude],
+                                    mode="lines+markers", name=link.label, showlegend=False,
+                                    line={"color": STATUS_CRIT if link.status == "critical" else STATUS_WARN, "width": 2 + 3 * link.score},
+                                    marker={"size": [2, 8], "symbol": ["circle", "triangle-up"]},
+                                    text=[link.label, f"score={link.score:.2f}; {link.distance_km:.1f} км; lag={link.lag_days}; confidence={link.confidence}"],
+                                    hovertemplate="%{text}<extra></extra>"))
+    located = [x for x in metadata if x.latitude is not None and x.longitude is not None]
+    center = {"lat": sum(x.latitude for x in located)/len(located), "lon": sum(x.longitude for x in located)/len(located)} if located else {"lat": 52.3, "lon": 29.5}
+    fig.update_layout(map={"style": "open-street-map", "center": center, "zoom": 7}, margin={"l":0,"r":0,"t":0,"b":0}, height=520)
+    return fig
+
+
+def render_watercut(repository: galit.WatercutRepository) -> None:
+    st.subheader("Диагностика обводнения")
+    st.warning(galit.WATERCUT_DISCLAIMER)
+    a,b,c = st.columns(3)
+    a.download_button("Шаблон metadata", galit.metadata_csv_template(), "watercut-metadata.csv", "text/csv", key="wc-meta-template")
+    b.download_button("Шаблон добычи", galit.production_csv_template(), "watercut-production.csv", "text/csv", key="wc-prod-template")
+    c.download_button("Шаблон закачки", galit.injection_csv_template(), "watercut-injection.csv", "text/csv", key="wc-inj-template")
+    with st.form("watercut-import-form"):
+        meta_file=st.file_uploader("Metadata CSV",type=["csv"],key="wc-meta-file")
+        prod_file=st.file_uploader("Production CSV",type=["csv"],key="wc-prod-file")
+        inj_file=st.file_uploader("Injection CSV",type=["csv"],key="wc-inj-file")
+        submit=st.form_submit_button("Проверить и импортировать")
+    if submit:
+        messages=[]; errors=[]
+        try:
+            if meta_file:
+                rows,bad=galit.metadata_from_csv(meta_file.getvalue().decode("utf-8-sig")); errors+=bad
+                for row in rows: repository.upsert_metadata(row)
+                messages.append(f"metadata: {len(rows)}")
+            if prod_file:
+                rows,bad=galit.production_from_csv(prod_file.getvalue().decode("utf-8-sig")); errors+=bad; messages.append(str(repository.ingest_production(rows)))
+            if inj_file:
+                rows,bad=galit.injection_from_csv(inj_file.getvalue().decode("utf-8-sig")); errors+=bad; messages.append(str(repository.ingest_injection(rows)))
+            if messages: st.success("; ".join(messages))
+            if errors: st.warning("Часть строк отклонена: " + "; ".join(errors[:20]))
+        except (UnicodeDecodeError, galit.WatercutStorageError, galit.WatercutConflictError, ValueError) as exc: st.error(f"Импорт не выполнен: {exc}")
+    try: results=watercut_portfolio(repository); metadata=repository.list_metadata()
+    except galit.WatercutStorageError as exc: st.error(str(exc)); return
+    if not results: st.info("Нет добывающих скважин с историей. Импортируйте metadata и production CSV."); return
+    fields=sorted({x.field_name for x in metadata if x.field_name}); clusters=sorted({x.cluster for x in metadata if x.cluster}); reservoirs=sorted({x.reservoir for x in metadata if x.reservoir})
+    f1,f2,f3,f4=st.columns(4); field_filter=f1.multiselect("Field",fields,default=fields,key="wc-field"); cluster_filter=f2.multiselect("Cluster",clusters,default=clusters,key="wc-cluster"); reservoir_filter=f3.multiselect("Reservoir",reservoirs,default=reservoirs,key="wc-reservoir"); status_filter=f4.multiselect("Status",["low","growing","critical"],default=["low","growing","critical"],key="wc-status")
+    by_well={x.well:x for x in metadata}; shown=[x for x in results if x.severity in status_filter and (not fields or by_well[x.well].field_name in field_filter) and (not clusters or by_well[x.well].cluster in cluster_filter) and (not reservoirs or by_well[x.well].reservoir in reservoir_filter)]
+    k=st.columns(4); k[0].metric("Добывающий фонд",len(shown)); k[1].metric("Растущие",sum(x.severity=="growing" for x in shown)); k[2].metric("Критические",sum(x.severity=="critical" for x in shown)); k[3].metric("Возможные потери нефти",f"{sum(x.possible_oil_loss_m3d or 0 for x in shown):.1f} м³/сут")
+    st.dataframe(pd.DataFrame([{"Скважина":x.well,"Статус":x.severity,"Обводнённость":x.current_water_cut,"Δ п.п.":x.absolute_change_pp,"Confidence":x.confidence,"Потеря нефти":x.possible_oil_loss_m3d} for x in shown]),width="stretch",hide_index=True)
+    links=list(galit.build_watercut_links(metadata,repository.list_production(),repository.list_injection(),top_n=30))
+    if links: st.plotly_chart(fig_watercut_links(metadata,links),width="stretch"); st.caption("Слой показывает только top-N связей выше policy-порога; стрелка направлена injector → producer.")
+    if not shown: return
+    selected=st.selectbox("Карточка producer",[x.well for x in shown],key="wc-well"); item=next(x for x in shown if x.well==selected); history=repository.list_production(selected)
+    graph=pd.DataFrame([{"date":x.timestamp,"water_cut":x.water_cut,"q_oil":x.q_oil_m3d,"q_water":x.q_water_m3d} for x in history]).set_index("date"); st.line_chart(graph)
+    st.markdown(f"**Onset:** {item.onset_window or 'unavailable'} · **confidence:** {item.confidence} · **quality:** {item.data_quality:.0%} · **policy:** {item.policy_version}")
+    if item.oil_forecast: st.dataframe(pd.DataFrame([asdict(x) for x in item.oil_forecast]),width="stretch",hide_index=True)
+    st.markdown("**Evidence:** " + ", ".join(f"{k}={v:.2f}" for k,v in item.evidence.items()))
+    st.dataframe(pd.DataFrame([asdict(x) for x in item.candidate_injectors]),width="stretch",hide_index=True)
+    st.info("Альтернативы: " + "; ".join(item.alternative_explanations))
 
 
 def result_labels(results: list[DiagnosisResult]) -> list[tuple[str, DiagnosisResult]]:
@@ -2517,9 +2831,756 @@ def render_treatment_journal(repository: galit.TreatmentRepository,
                 st.error(f"A/B сравнение недоступно: {exc}")
 
 
+def twin_storage_path() -> Path:
+    configured = Path(os.environ.get("GALIT_TWIN_EVENT_STORAGE", "data/digital_twin_events.json"))
+    return configured if configured.is_absolute() else PROJECT_ROOT / configured
+
+
+def equipment_storage_path() -> Path:
+    configured = Path(os.environ.get("GALIT_EQUIPMENT_STORAGE", "data/equipment.json"))
+    return configured if configured.is_absolute() else PROJECT_ROOT / configured
+
+
+class DashboardFundTwinAdapter:
+    """Expose loaded fund identities without persisting or inventing timeline events."""
+    def __init__(self, cases: list[WellCase]):
+        self.cases = tuple(cases)
+
+    def identities(self):
+        for case in self.cases:
+            yield galit.WellIdentity(case.name, cluster=case.cluster, site=case.site)
+
+    def events(self):
+        return ()
+
+
+def get_twin_components(cases: list[WellCase] | None = None) -> tuple[galit.DigitalTwinService, galit.ManualEventRepository]:
+    """Build the aggregate from configured repositories and the loaded fund."""
+    manual = galit.ManualEventRepository(twin_storage_path())
+    service = galit.build_default_service(
+        watercut=get_watercut_repository(),
+        equipment=galit.EquipmentRepository(equipment_storage_path()),
+        treatments=get_treatment_repository(),
+        passports=get_passport_repository(),
+        manual=manual,
+    )
+    if cases:
+        service = galit.DigitalTwinService((*service.adapters, DashboardFundTwinAdapter(cases)), service.policy)
+    return service, manual
+
+
+def twin_timeline_categories() -> list[str]:
+    """Stable category order shared by the filter and regression tests."""
+    return [category.value for category in galit.EventCategory]
+
+
+def fig_twin_timeline(items: list[dict[str, Any]]) -> go.Figure:
+    """Compact, deterministic timeline chart; annotations never contain raw HTML."""
+    colors = {"production": GREEN_700, "watercut": "#1665A5", "repair": STATUS_WARN,
+              "equipment_failure": STATUS_CRIT, "equipment_telemetry": GREEN_500,
+              "treatment": "#7C3AED", "laboratory": "#0E7490", "complication": STATUS_HIGH,
+              "economic_loss": "#9A3412", "pressure_temperature": "#475569"}
+    ordered = list(reversed(items)); fig = go.Figure()
+    for index, item in enumerate(ordered):
+        fig.add_trace(go.Scatter(x=[item["occurred_at"]], y=[index], mode="markers+text",
+            marker={"size": 12, "color": colors.get(item["category"], INK_MUTED)},
+            text=[item["title"]], textposition="middle right", name=item["category"],
+            hovertext=[item["summary"]], hovertemplate="%{x}<br>%{hovertext}<extra></extra>"))
+    fig.update_layout(height=max(320, 52 * len(ordered)), showlegend=False,
+                      margin={"l": 20, "r": 20, "t": 10, "b": 20}, yaxis={"visible": False})
+    return fig
+
+
+def render_digital_twin(service: galit.DigitalTwinService,
+                        repository: galit.ManualEventRepository) -> None:
+    st.subheader("Цифровой двойник фонда скважин")
+    st.caption("Единая история агрегирует существующие источники; ручное хранилище содержит только новые события.")
+    wells = service.list_wells()
+    if not wells:
+        st.info("Источники пока пусты. Добавьте ручное событие ниже или загрузите данные в профильные разделы.")
+        selected_name = st.text_input("Скважина", key="twin-empty-well")
+    else:
+        labels = [f"{x['display_name']} · {x.get('field') or x.get('site') or 'контекст не задан'}" for x in wells]
+        selected_label = st.selectbox("Скважина", labels, key="twin-well")
+        selected_name = wells[labels.index(selected_label)]["canonical_id"]
+    available_categories = twin_timeline_categories()
+    categories = st.multiselect("Категории", available_categories,
+                                default=available_categories, key="twin-categories")
+    days = st.slider("Период, суток", 7, 1095, 180, key="twin-days")
+    if selected_name:
+        try:
+            end = datetime.now(timezone.utc); start = end - timedelta(days=days)
+            snapshot = service.snapshot(selected_name, as_of=end)
+            timeline = service.timeline(selected_name, date_from=start, date_to=end,
+                                        categories=categories, limit=500)
+            a, b, c, d = st.columns(4)
+            a.metric("Состояние", snapshot.state)
+            b.metric("Health screening", "—" if snapshot.health_score is None else f"{snapshot.health_score:.0%}")
+            c.metric("Событий", timeline["total"])
+            d.metric("Stale sources", len(snapshot.stale_sources))
+            st.caption("Freshness: " + (", ".join(snapshot.stale_sources) or "актуальные датированные источники") +
+                       " · Missing: " + (", ".join(snapshot.missing_sources) or "нет"))
+            if timeline["items"]: st.plotly_chart(fig_twin_timeline(timeline["items"]), width="stretch")
+            else: st.info("В выбранном периоде событий нет.")
+            st.markdown("### Почему изменилось состояние")
+            changes = service.changes(selected_name, as_of=end, limit=20)
+            if not changes: st.info("Нет значимых датированных событий для before/after сопоставления.")
+            for change in changes:
+                with st.container(border=True):
+                    st.markdown(f"**{html.escape(change.title)}** · confidence: `{change.confidence}`")
+                    st.write(change.statement)
+                    st.json({"before": change.before, "after": change.after}, expanded=False)
+                    st.caption("Альтернативы: " + "; ".join(change.alternative_explanations))
+            st.warning(galit.ASSOCIATION_DISCLAIMER)
+        except (galit.TwinNotFoundError, galit.TwinAmbiguousError, galit.TwinStorageError, ValueError) as exc:
+            st.error(html.escape(str(exc)))
+    st.download_button("CSV-шаблон ручных событий", galit.manual_csv_template(),
+                       "digital-twin-events.csv", "text/csv", key="twin-template")
+    with st.form("twin-manual-event", clear_on_submit=True):
+        well = st.text_input("Скважина события", value="" if not wells else wells[0]["display_name"])
+        field_name = st.text_input("Месторождение / field")
+        occurred = st.text_input("Время ISO 8601 с timezone", value=datetime.now(timezone.utc).isoformat())
+        category = st.selectbox("Тип", [galit.EventCategory.REPAIR.value,
+            galit.EventCategory.EQUIPMENT_FAILURE.value, galit.EventCategory.LABORATORY.value])
+        title = st.text_input("Заголовок")
+        summary = st.text_area("Описание")
+        source_id = st.text_input("Внешний ID (для идемпотентности)")
+        submitted = st.form_submit_button("Сохранить событие")
+    if submitted:
+        try:
+            event = galit.manual_event(well=galit.WellIdentity(well, field_name or None),
+                occurred_at=datetime.fromisoformat(occurred.replace("Z", "+00:00")), category=category,
+                event_type=category, title=title, summary=summary,
+                source_record_id=source_id or None, metadata={"entered_via": "streamlit"})
+            repository.add(event); st.success("Событие сохранено идемпотентно.")
+        except (ValueError, galit.TwinConflictError, galit.TwinStorageError) as exc: st.error(html.escape(str(exc)))
+
+
+def _compatibility_note(text: str) -> str:
+    """Перевести фиксированные пояснения ядра, не меняя их смысл."""
+    translations = {
+        "conservative-volume linear ion mixing": "линейное смешение ионов при сохранении объёма",
+        "pH mixed from hydrogen-ion activities without buffering/speciation": "pH смешивается по активности H⁺ без учёта буферности и полного химического равновесия",
+        "no reaction or precipitation depletion during mixing": "реакции и выпадение осадка в процессе смешения не уменьшают концентрации",
+        "unsafe means at least one available SI > 0": "небезопасно означает: хотя бы для одного рассчитанного минерала SI > 0",
+        "insufficient supplied chemistry": "недостаточно переданных результатов химического анализа",
+        "Supersaturation indicates thermodynamic tendency, not deposition rate or deposited mass.": "Пересыщение показывает термодинамическую возможность, а не скорость или массу отложений.",
+        "simplified NaCl activity model; rigorous brine decisions require validated Pitzer modelling": "Упрощённая модель активности NaCl; для решения по рассолам нужна валидированная модель Питцера.",
+        "Davies activity model is outside its usual I<=0.5 mol/L range; use a validated Pitzer/speciation model": "Модель Дэвиса применена вне обычного диапазона I ≤ 0,5 моль/л; нужна валидированная модель Питцера/специации.",
+        "25 C Ksp used outside the 5..50 C screening range; temperature correction is not available": "Ksp при 25 °C применён вне диапазона screening 5…50 °C; температурная поправка недоступна.",
+    }
+    return translations.get(text, text)
+
+
+def render_compatibility_result(result: galit.CompatibilityResult) -> None:
+    """Показать инженерный screening совместимости понятными блоками."""
+    dangerous = "—" if result.dangerous_fraction_b is None else f"{result.dangerous_fraction_b:.0%} воды B"
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Наиболее опасная смесь", dangerous)
+    c2.metric("Соотношение A:B", result.dangerous_ratio_a_to_b or "—")
+    c3.metric("Максимальный SI", "—" if result.dangerous_risk_score is None else f"{result.dangerous_risk_score:.3f}")
+    if result.dangerous_risk_score is not None and result.dangerous_risk_score > 0:
+        st.error("В наиболее опасной смеси есть термодинамическое пересыщение (SI > 0). Не смешивайте воды без инженерной и лабораторной проверки.")
+    else:
+        st.success("На рассчитанной сетке положительный SI не выявлен. Это screening, а не гарантия отсутствия отложений.")
+
+    st.plotly_chart(fig_compatibility_ratios(result), width="stretch",
+                    config={"displaylogo": False, "responsive": True})
+    st.caption("SI = log₁₀(IAP/Ksp): выше нуля — пересыщение; пустая линия означает, что нужные ионы не были предоставлены.")
+
+    if result.unsafe_intervals:
+        intervals = ", ".join(
+            f"{item.start_fraction_b:.0%}…{item.end_fraction_b:.0%} воды B"
+            for item in result.unsafe_intervals
+        )
+        st.warning("Небезопасные интервалы на выбранном шаге: " + intervals)
+    else:
+        st.info("Небезопасные интервалы на выбранном шаге не найдены.")
+
+    if result.deposition_locations:
+        location_rows = [{
+            "Минерал": COMPATIBILITY_MINERAL_RU[item.mineral],
+            "Первое пересыщение по ходу потока, м": item.first_supersaturation_depth_m,
+            "Глубина максимального SI, м": item.maximum_risk_depth_m,
+            "Максимальный SI": item.maximum_saturation_index,
+        } for item in result.deposition_locations]
+        st.markdown("#### Вероятная зона проявления по заданному профилю")
+        st.dataframe(pd.DataFrame(location_rows), width="stretch", hide_index=True)
+        st.caption("Это вероятная зона первого пересыщения по направлению потока, а не прогноз массы осадка.")
+    else:
+        st.info("Место возможного выпадения не рассчитано: добавьте измеренный профиль глубина–температура–давление.")
+
+    inhibitor = result.inhibitor
+    st.markdown("#### Ингибитор")
+    if inhibitor.status == "dose_from_validated_curve" and inhibitor.dose_mg_l is not None:
+        st.success(
+            f"По введённой валидированной кривой: не менее {inhibitor.dose_mg_l:g} мг/л продукта "
+            f"«{inhibitor.product}» для минерала {COMPATIBILITY_MINERAL_RU.get(inhibitor.mineral or '', inhibitor.mineral)}."
+        )
+        st.caption(f"Основание валидации: {inhibitor.validation_reference}. Интерполяция и экстраполяция не выполняются.")
+    else:
+        st.warning("Требуется лабораторный тест: без валидированной кривой «доза–поддерживаемый SI» ядро не назначает дозу.")
+        st.caption(inhibitor.basis)
+
+    with st.expander("Допущения, предупреждения и качество данных"):
+        st.markdown("**Допущения модели**")
+        for item in result.assumptions:
+            st.write("• " + _compatibility_note(item))
+        st.markdown("**Предупреждения**")
+        for item in result.warnings:
+            st.warning(_compatibility_note(item))
+        missing = []
+        for mineral in COMPATIBILITY_MINERAL_RU:
+            if all(row.minerals[mineral].saturation_index is None for row in result.ratios):
+                required = ", ".join(result.ratios[0].minerals[mineral].required_inputs)
+                missing.append(f"{COMPATIBILITY_MINERAL_RU[mineral]}: нужны {required}")
+        if missing:
+            st.error("Не рассчитано из-за отсутствующих измерений: " + "; ".join(missing))
+        st.caption(f"Версия модели: {result.model_version}. Концентрации — мг/л, давление — Па.")
+
+
+def render_compatibility_section() -> None:
+    """Независимый additive-раздел: не использует и не меняет файл фонда."""
+    with st.expander("Совместимость двух вод", expanded=False):
+        st.markdown("### Проверка совместимости двух измеренных вод")
+        st.info("Введите только лабораторные данные. Типовой или синтетический состав здесь никогда не подставляется; пустой ион означает «нет данных», а не ноль.")
+        st.download_button(
+            "Скачать двухстрочный шаблон XLSX", compatibility_template_bytes(),
+            "galit_compatibility_two_waters.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="compatibility-template",
+        )
+        upload_bytes = st.session_state.get("compatibility-upload-bytes")
+        upload_name = st.session_state.get("compatibility-upload-name")
+        if upload_bytes and upload_name:
+            try:
+                water_frame = read_table(upload_bytes, upload_name)
+                st.success(f"Используется файл «{upload_name}» из боковой панели.")
+                st.dataframe(water_frame, width="stretch", hide_index=True)
+            except Exception as exc:
+                st.error(f"Не удалось прочитать файл двух вод: {exc}")
+                water_frame = compatibility_template_frame()
+        else:
+            st.caption("Или заполните две строки вручную. Обязательны name, pH, t_c и p_pa; ионы — в мг/л.")
+            water_frame = st.data_editor(
+                compatibility_template_frame(), width="stretch", hide_index=True,
+                num_rows="fixed", key="compatibility-waters-editor",
+            )
+
+        step_percent = st.select_slider(
+            "Шаг перебора доли воды B", options=[1, 2, 5, 10], value=1,
+            format_func=lambda value: f"{value}%",
+            help="Меньший шаг точнее показывает узкие опасные интервалы.",
+        )
+        use_profile = st.checkbox("Рассчитать вероятную глубину проявления по измеренному профилю", key="compatibility-use-profile")
+        profile = None
+        flow_direction = "bottom_to_surface"
+        if use_profile:
+            flow_label = st.radio(
+                "Направление потока", ["От забоя к устью", "От устья к забою"],
+                horizontal=True, key="compatibility-flow",
+            )
+            flow_direction = "bottom_to_surface" if flow_label == "От забоя к устью" else "surface_to_bottom"
+            profile = st.data_editor(
+                pd.DataFrame([
+                    {"depth_m": 0.0, "t_c": pd.NA, "p_pa": pd.NA},
+                    {"depth_m": pd.NA, "t_c": pd.NA, "p_pa": pd.NA},
+                ]), num_rows="dynamic", hide_index=True, width="stretch",
+                key="compatibility-profile-editor",
+            )
+
+        use_curve = st.checkbox("У меня есть валидированная лабораторная кривая ингибитора", key="compatibility-use-curve")
+        curve_fields = None
+        if use_curve:
+            a, b, c = st.columns(3)
+            product = a.text_input("Продукт", key="compatibility-product")
+            mineral_label = b.selectbox("Минерал", list(COMPATIBILITY_MINERAL_RU.values()), key="compatibility-mineral")
+            reference = c.text_input("Номер отчёта / ссылка", key="compatibility-reference")
+            validated = st.checkbox(
+                "Подтверждаю: кривая валидирована для этих вод и условий",
+                key="compatibility-validated",
+            )
+            curve_frame = st.data_editor(
+                pd.DataFrame([
+                    {"dose_mg_l": pd.NA, "maximum_supported_si": pd.NA},
+                    {"dose_mg_l": pd.NA, "maximum_supported_si": pd.NA},
+                ]), num_rows="dynamic", hide_index=True, width="stretch",
+                key="compatibility-curve-editor",
+            )
+            mineral = next(key for key, value in COMPATIBILITY_MINERAL_RU.items() if value == mineral_label)
+            curve_fields = (product, mineral, reference, validated, curve_frame)
+
+        if st.button("Рассчитать совместимость", type="primary", key="compatibility-calculate"):
+            try:
+                water_a, water_b = compatibility_waters_from_frame(water_frame)
+                profile_points = compatibility_profile_from_frame(profile) if profile is not None else None
+                curve = compatibility_curve_from_frame(*curve_fields) if curve_fields is not None else None
+                result = galit.evaluate_compatibility(
+                    water_a, water_b,
+                    fractions_b=galit.default_mix_fractions(step_percent / 100),
+                    profile=profile_points, flow_direction=flow_direction,
+                    dose_response=curve,
+                )
+                st.session_state["compatibility-result"] = result
+            except (ValueError, TypeError) as exc:
+                st.session_state.pop("compatibility-result", None)
+                st.error(f"Проверьте входные данные: {exc}")
+        result = st.session_state.get("compatibility-result")
+        if result is not None:
+            render_compatibility_result(result)
+
+
+# ==========================================================================
+# Feature 9: реагенты и склад (независимый evidence-gated контур)
+# ==========================================================================
+
+CHEMICAL_HAZARD_RU = {
+    "halite": "Галит", "calcite": "Кальцит", "wax": "АСПО",
+    "corrosion": "Коррозия", "barite": "Барит", "gypsum": "Гипс",
+}
+
+
+def chemical_storage_path() -> Path:
+    """Storage is explicit and independent from diagnosis/treatment repositories."""
+    return Path(os.environ.get("GALIT_CHEMICAL_STORAGE", PROJECT_ROOT / "data" / "chemicals.json"))
+
+
+def get_chemical_repository() -> galit.ChemicalRepository:
+    return galit.ChemicalRepository(chemical_storage_path())
+
+
+def _chemical_number(value: Any, digits: int = 3) -> str:
+    """Format a domain decimal without turning missing values into zero."""
+    if value is None:
+        return "не определено"
+    number = Decimal(str(value))
+    rendered = f"{number:.{digits}f}".rstrip("0").rstrip(".")
+    return rendered or "0"
+
+
+def chemical_catalog_frame(products: list[galit.ChemicalProduct],
+                           envelopes: list[galit.ChemicalDoseResponseEnvelope]) -> pd.DataFrame:
+    """Pure catalog adapter; validation status comes only from stored evidence."""
+    evidence = {product.id: [item for item in envelopes if item.product_id == product.id]
+                for product in products}
+    return pd.DataFrame([{
+        "ID": product.id,
+        "Продукт": product.name,
+        "Производитель": product.manufacturer,
+        "Назначение": ", ".join(CHEMICAL_HAZARD_RU.get(x, x) for x in product.hazards),
+        "Цена за кг": None if product.price_per_kg is None else float(product.price_per_kg),
+        "Валюта": product.currency,
+        "Активен": product.active,
+        "Конвертов эффективности": len(evidence[product.id]),
+        "Валидированных": sum(item.validated for item in evidence[product.id]),
+    } for product in products])
+
+
+def chemical_points_from_frame(frame: pd.DataFrame) -> tuple[galit.ChemicalDoseResponsePoint, ...]:
+    """Strict import adapter: every row is an explicit tested dose and outcome."""
+    aliases = {str(column).strip().lower(): column for column in frame.columns}
+    dose_column = aliases.get("dose_kg_m3") or aliases.get("dose_mg_l")
+    effective_column = aliases.get("effective")
+    if dose_column is None or effective_column is None:
+        raise ValueError("нужны колонки dose_kg_m3 (или dose_mg_l) и effective")
+    points = []
+    for index, row in frame.iterrows():
+        raw_effective = row[effective_column]
+        if isinstance(raw_effective, bool):
+            effective = raw_effective
+        else:
+            token = str(raw_effective).strip().lower()
+            if token not in {"true", "false", "1", "0", "да", "нет"}:
+                raise ValueError(f"строка {index + 2}: effective должен быть true/false")
+            effective = token in {"true", "1", "да"}
+        points.append(galit.ChemicalDoseResponsePoint(
+            galit.dose_to_kg_m3(row[dose_column], "mg/L" if str(dose_column).lower() == "dose_mg_l" else "kg/m3"),
+            effective,
+        ))
+    if not points:
+        raise ValueError("таблица испытаний пуста")
+    return tuple(points)
+
+
+def chemical_candidate_rows(products: list[galit.ChemicalProduct],
+                            envelopes: list[galit.ChemicalDoseResponseEnvelope],
+                            hazards: list[str], treated_m3_day: Any,
+                            oil_m3_day: Any) -> list[dict[str, Any]]:
+    """Explain every active candidate, including rejected products and missing data."""
+    wanted = tuple(sorted({str(item).strip().lower() for item in hazards if str(item).strip()}))
+    recommendations = {
+        item.product_id: item for item in galit.recommend_products(
+            products, envelopes, wanted, treated_m3_day, oil_m3_day
+        ) if item.status == "available" and item.product_id
+    }
+    rows: list[dict[str, Any]] = []
+    for product in products:
+        if not product.active:
+            continue
+        reasons: list[str] = []
+        missing_hazards = sorted(set(wanted) - set(product.hazards))
+        if missing_hazards:
+            reasons.append("не предназначен для: " + ", ".join(missing_hazards))
+        selected = []
+        for hazard in wanted:
+            matches = [item for item in envelopes if item.product_id == product.id
+                       and item.hazard == hazard and item.validated
+                       and item.validation_reference and item.minimum_effective_dose is not None]
+            if not matches:
+                reasons.append(f"нет валидированного эффективного испытания: {hazard}")
+            else:
+                selected.append(min(matches, key=lambda item: (item.minimum_effective_dose, item.id)))
+        if len(wanted) > 1 and not set(wanted).issubset(product.compatible_with):
+            reasons.append("совместное применение для всех опасностей не подтверждено")
+        recommendation = recommendations.get(product.id)
+        evidence = recommendation.evidence_ids if recommendation else tuple(item.id for item in selected)
+        references = [item.validation_reference for item in envelopes if item.id in evidence]
+        rows.append({
+            "Статус": "подходит" if recommendation else "отклонён",
+            "Продукт": product.name,
+            "Опасности": ", ".join(CHEMICAL_HAZARD_RU.get(x, x) for x in wanted) or "не заданы",
+            "Минимальная испытанная доза, кг/м³": None if recommendation is None else float(recommendation.dose_kg_m3),
+            "Основа дозы": "масса реагента / объём обрабатываемой жидкости",
+            "Расход, кг/сут": None if recommendation is None else float(recommendation.daily_consumption_kg),
+            "Стоимость/сут": None if recommendation is None or recommendation.daily_cost is None else float(recommendation.daily_cost),
+            "Стоимость на м³ нефти": None if recommendation is None or recommendation.cost_per_m3_oil is None else float(recommendation.cost_per_m3_oil),
+            "Валюта": product.currency,
+            "Доказательства": ", ".join(evidence) or "нет",
+            "Ссылки": "; ".join(str(x) for x in references if x) or "нет",
+            "Причина / недостающие данные": "; ".join(reasons) if reasons else (
+                "стоимость не определена: нет цены" if product.price_per_kg is None else
+                "стоимость на м³ нефти не определена: дебит нефти равен нулю" if Decimal(str(oil_m3_day)) == 0 else "—"
+            ),
+        })
+    if not rows:
+        rows.append({"Статус": "нет кандидатов", "Продукт": None,
+                     "Причина / недостающие данные": "каталог активных продуктов пуст"})
+    return rows
+
+
+def chemical_inventory_frame(repository: galit.ChemicalRepository, *, as_of: date) -> pd.DataFrame:
+    """Pure projection over append-only ledger: physical, reserved, available, expiry."""
+    transactions = repository.list_transactions()
+    reservations = repository.list_reservations()
+    rows = []
+    for lot in repository.list_lots():
+        on_hand = sum((item.signed_quantity for item in transactions if item.lot_id == lot.id), Decimal(0))
+        reserved = sum((quantity for item in reservations if item.status == "active"
+                        for lot_id, quantity in item.allocations if lot_id == lot.id), Decimal(0))
+        expired = lot.expires_on < as_of
+        available = Decimal(0) if expired else max(Decimal(0), on_hand - reserved)
+        rows.append({
+            "Партия": lot.id, "Продукт ID": lot.product_id,
+            "Годен до": lot.expires_on.isoformat(), "Просрочена": expired,
+            "На складе, кг": float(on_hand), "Зарезервировано, кг": float(reserved),
+            "Доступно, кг": float(available),
+        })
+    return pd.DataFrame(rows)
+
+
+def chemical_consumption_history(transactions: list[galit.StockTransaction],
+                                 product_id: str) -> list[tuple[date, Decimal]]:
+    """Aggregate immutable consumption entries by UTC calendar day."""
+    totals: dict[date, Decimal] = {}
+    for item in transactions:
+        if item.product_id == product_id and item.kind == "consumption":
+            day = item.occurred_at.date()
+            totals[day] = totals.get(day, Decimal(0)) + item.quantity_kg
+    return sorted(totals.items())
+
+
+def chemical_forecast_view(repository: galit.ChemicalRepository, product_id: str, *,
+                           as_of: date, horizon_days: int, lead_time_days: int,
+                           safety_stock_days: int) -> dict[str, Any]:
+    history = chemical_consumption_history(repository.list_transactions(), product_id)
+    forecast = galit.deterministic_consumption_forecast(
+        history, horizon_days=horizon_days, as_of=as_of,
+    )
+    if forecast["status"] != "available":
+        return {"forecast": forecast, "shortage": None,
+                "assumptions": "Истории списаний нет; нулевой расход не предполагается."}
+    stock = repository.stock(product_id, as_of=as_of)
+    shortage = galit.shortage_report(
+        stock["available_kg"], forecast["daily_kg"], lead_time_days=lead_time_days,
+        safety_stock_days=safety_stock_days, as_of=as_of,
+    )
+    return {
+        "forecast": forecast, "shortage": shortage,
+        "assumptions": ("Детерминированное среднее по календарным дням от первого списания; "
+                        "тренд, сезонность и будущие поступления не моделируются. "
+                        "Просроченные и зарезервированные остатки исключены."),
+    }
+
+
+def fig_chemical_stock(frame: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    if not frame.empty:
+        fig.add_bar(x=frame["Партия"], y=frame["Доступно, кг"], name="Доступно", marker_color=GREEN_700)
+        fig.add_bar(x=frame["Партия"], y=frame["Зарезервировано, кг"], name="Резерв", marker_color=STATUS_WARN)
+    fig.update_layout(barmode="stack", height=280, margin=dict(l=8, r=8, t=20, b=8),
+                      paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+                      yaxis_title="кг", font=dict(family=FONT_FAMILY, color=INK))
+    return fig
+
+
+def _chemical_ui_error(exc: Exception) -> None:
+    st.error(f"Операция не выполнена: {exc}. Проверьте поля и повторите.")
+
+
+def render_chemicals_section() -> None:
+    """Independent novice-friendly UI; it never creates efficacy evidence implicitly."""
+    with st.expander("Реагенты и склад", expanded=False):
+        st.caption(f"Хранилище: {chemical_storage_path()} · данные эффективности добавляются только явно.")
+        try:
+            repository = get_chemical_repository()
+            products = repository.list_products()
+            envelopes = repository.list_envelopes()
+        except (galit.ChemicalStorageError, ValueError) as exc:
+            _chemical_ui_error(exc)
+            return
+
+        catalog_tab = st.expander("1. Каталог и доказательства", expanded=True)
+        recommendation_tab = st.expander("2. Подбор для скважины")
+        stock_tab = st.expander("3. Склад и резервы")
+        forecast_tab = st.expander("4. Прогноз потребления")
+        product_labels = {f"{item.name} · {item.id}": item for item in products}
+
+        with catalog_tab:
+            st.markdown("#### Каталог продуктов")
+            if products:
+                st.dataframe(chemical_catalog_frame(products, envelopes), width="stretch", hide_index=True)
+            else:
+                st.info("Каталог пуст. Добавьте реальный продукт; доказательства эффективности не создаются автоматически.")
+            with st.form("chemical-product-form", clear_on_submit=True):
+                st.markdown("##### Добавить или обновить продукт")
+                c1, c2, c3 = st.columns(3)
+                product_id = c1.text_input("ID продукта *")
+                product_name = c2.text_input("Название *")
+                manufacturer = c3.text_input("Производитель *")
+                hazards_text = st.text_input("Опасности *", help="Коды через запятую: halite, calcite, wax, corrosion")
+                compatible_text = st.text_input("Явно подтверждённая совместимость", help="Для многокомпонентного назначения; коды через запятую")
+                p1, p2, p3 = st.columns(3)
+                density_text = p1.text_input("Плотность, кг/л (необязательно)")
+                price_text = p2.text_input("Цена за кг (необязательно)")
+                currency = p3.selectbox("Валюта", ["BYN", "RUB", "USD", "EUR"])
+                notes = st.text_area("Примечание")
+                if st.form_submit_button("Сохранить продукт"):
+                    try:
+                        repository.put_product(galit.ChemicalProduct(
+                            product_id, product_name, manufacturer,
+                            tuple(x.strip() for x in hazards_text.split(",") if x.strip()),
+                            tuple(x.strip() for x in compatible_text.split(",") if x.strip()),
+                            Decimal(density_text) if density_text.strip() else None,
+                            Decimal(price_text) if price_text.strip() else None,
+                            currency if price_text.strip() else None, True, notes.strip() or None,
+                        ), expected_revision=repository.revision)
+                        st.success("Продукт сохранён. Эффективность по-прежнему не считается подтверждённой.")
+                        st.rerun()
+                    except (ValueError, galit.ChemicalStorageError, galit.ChemicalConflictError) as exc:
+                        _chemical_ui_error(exc)
+
+            if products:
+                st.markdown("##### Ввести или импортировать конверт эффективности")
+                st.warning("Отметка «валидировано» допустима только при наличии проверяемой ссылки и фактических испытаний.")
+                selected_label = st.selectbox("Продукт", list(product_labels), key="chemical-envelope-product")
+                e1, e2 = st.columns(2)
+                envelope_id = e1.text_input("ID конверта *", key="chemical-envelope-id")
+                envelope_hazard = e2.selectbox("Опасность", list(CHEMICAL_HAZARD_RU), key="chemical-envelope-hazard")
+                reference = st.text_input("Ссылка / номер отчёта *", key="chemical-envelope-reference")
+                conditions = st.text_area("Условия испытаний *", key="chemical-envelope-conditions")
+                points_upload = st.file_uploader("CSV испытаний", type=["csv"], key="chemical-envelope-file",
+                    help="dose_kg_m3,effective или dose_mg_l,effective")
+                points_text = st.text_area("Или CSV вручную", key="chemical-envelope-text",
+                    placeholder="dose_kg_m3,effective\n0.025,true")
+                validated = st.checkbox("Данные валидированы ответственным специалистом", key="chemical-envelope-validated")
+                confirm_evidence = st.checkbox("Подтверждаю: это фактические испытания, а не расчётные или демонстрационные данные",
+                                               key="chemical-envelope-confirm")
+                if st.button("Сохранить доказательство", key="chemical-envelope-save"):
+                    try:
+                        if not validated or not confirm_evidence:
+                            raise ValueError("для сохранения требуется явное подтверждение валидации")
+                        raw = points_upload.getvalue() if points_upload is not None else points_text.encode("utf-8")
+                        points = chemical_points_from_frame(pd.read_csv(io.BytesIO(raw)))
+                        repository.put_envelope(galit.ChemicalDoseResponseEnvelope(
+                            envelope_id, product_labels[selected_label].id, envelope_hazard,
+                            points, True, reference, conditions,
+                        ), expected_revision=repository.revision)
+                        st.success("Валидированный конверт сохранён с исходной ссылкой.")
+                        st.rerun()
+                    except (ValueError, pd.errors.ParserError, UnicodeDecodeError,
+                            galit.ChemicalStorageError, galit.ChemicalConflictError,
+                            galit.ChemicalNotFoundError) as exc:
+                        _chemical_ui_error(exc)
+            if envelopes:
+                st.markdown("##### Реестр доказательств")
+                st.dataframe(pd.DataFrame([{
+                    "ID": item.id, "Продукт ID": item.product_id,
+                    "Опасность": CHEMICAL_HAZARD_RU.get(item.hazard, item.hazard),
+                    "Валидировано": item.validated, "Ссылка": item.validation_reference,
+                    "Минимальная эффективная доза, кг/м³": (
+                        None if item.minimum_effective_dose is None else float(item.minimum_effective_dose)
+                    ), "Условия": item.conditions, "Ревизия": item.revision,
+                } for item in envelopes]), width="stretch", hide_index=True)
+
+        with recommendation_tab:
+            st.markdown("#### Evidence-gated подбор для контекста скважины")
+            hazard_options = list(CHEMICAL_HAZARD_RU)
+            hazards = st.multiselect("Действующие опасности *", hazard_options,
+                                     format_func=lambda x: CHEMICAL_HAZARD_RU[x], key="chemical-rec-hazards")
+            r1, r2 = st.columns(2)
+            treated = r1.number_input("Обрабатываемая жидкость, м³/сут", min_value=0.0, value=0.0, key="chemical-rec-fluid")
+            oil = r2.number_input("Дебит нефти, м³/сут", min_value=0.0, value=0.0, key="chemical-rec-oil")
+            st.caption("Доза: кг реагента на м³ обрабатываемой жидкости. Минимум выбирается только из эффективных испытанных точек.")
+            if st.button("Проверить кандидатов", key="chemical-rec-run"):
+                if not hazards:
+                    st.warning("Выберите хотя бы одну действующую опасность.")
+                else:
+                    rows = chemical_candidate_rows(products, envelopes, hazards, treated, oil)
+                    st.session_state["chemical-recommendations"] = rows
+            rows = st.session_state.get("chemical-recommendations")
+            if rows:
+                frame = pd.DataFrame(rows)
+                eligible = frame[frame["Статус"] == "подходит"] if "Статус" in frame else pd.DataFrame()
+                if eligible.empty:
+                    st.warning("Назначение невозможно: нет кандидата с достаточными валидированными доказательствами.")
+                else:
+                    st.success(f"Подходящих кандидатов: {len(eligible)}. Перед назначением проверьте условия испытаний и ссылку.")
+                    if oil == 0:
+                        st.warning("Дебит нефти равен нулю: стоимость на м³ нефти не определена, а не равна нулю.")
+                st.dataframe(frame, width="stretch", hide_index=True)
+
+        with stock_tab:
+            st.markdown("#### Остатки по партиям и append-only журнал")
+            as_of = st.date_input("Состояние на дату", value=date.today(), key="chemical-stock-asof")
+            inventory = chemical_inventory_frame(repository, as_of=as_of)
+            if inventory.empty:
+                st.info("Партий пока нет. Поступление создаёт партию и неизменяемую запись журнала.")
+            else:
+                totals = inventory[["На складе, кг", "Зарезервировано, кг", "Доступно, кг"]].sum()
+                m1, m2, m3 = st.columns(3)
+                m1.metric("На складе", f"{totals['На складе, кг']:.3f} кг")
+                m2.metric("Зарезервировано", f"{totals['Зарезервировано, кг']:.3f} кг")
+                m3.metric("Доступно", f"{totals['Доступно, кг']:.3f} кг")
+                st.dataframe(inventory, width="stretch", hide_index=True)
+                st.plotly_chart(fig_chemical_stock(inventory), width="stretch",
+                                config={"displaylogo": False, "displayModeBar": False})
+            if products:
+                with st.form("chemical-lot-form", clear_on_submit=True):
+                    st.markdown("##### Зарегистрировать поступление")
+                    lot_product = st.selectbox("Продукт", list(product_labels), key="chemical-lot-product")
+                    l1, l2, l3 = st.columns(3)
+                    lot_id = l1.text_input("ID партии *")
+                    quantity = l2.number_input("Количество, кг *", min_value=0.001, value=1.0)
+                    expires = l3.date_input("Годен до *", value=date.today() + timedelta(days=365))
+                    received = st.date_input("Дата поступления", value=date.today(), key="chemical-lot-received")
+                    if st.form_submit_button("Записать поступление"):
+                        try:
+                            repository.add_lot(galit.StockLot(
+                                lot_id, product_labels[lot_product].id,
+                                datetime(received.year, received.month, received.day, tzinfo=timezone.utc),
+                                expires, Decimal(str(quantity)),
+                            ), idempotency_key=f"ui-receipt:{lot_id}", expected_revision=repository.revision)
+                            st.success("Поступление записано в append-only журнал.")
+                            st.rerun()
+                        except (ValueError, galit.ChemicalStorageError, galit.ChemicalConflictError,
+                                galit.ChemicalNotFoundError) as exc:
+                            _chemical_ui_error(exc)
+
+                st.markdown("##### Резервирование")
+                reserve_product = st.selectbox("Продукт для резерва", list(product_labels), key="chemical-reserve-product")
+                q1, q2 = st.columns(2)
+                reserve_quantity = q1.number_input("Количество резерва, кг", min_value=0.001, value=1.0, key="chemical-reserve-qty")
+                required_on = q2.date_input("Требуется на дату", value=date.today(), key="chemical-reserve-date")
+                reserve_confirm = st.checkbox("Подтверждаю создание резерва и уменьшение доступного остатка",
+                                              key="chemical-reserve-confirm")
+                if st.button("Создать резерв", key="chemical-reserve-save"):
+                    if not reserve_confirm:
+                        st.warning("Сначала явно подтвердите операцию.")
+                    else:
+                        try:
+                            item = repository.reserve(
+                                product_labels[reserve_product].id, Decimal(str(reserve_quantity)), required_on,
+                                idempotency_key=f"ui-reserve:{uuid4()}", expected_revision=repository.revision,
+                            )
+                            st.success(f"Резерв создан: {item.quantity_kg} кг; распределение FEFO: {item.allocations}.")
+                            st.rerun()
+                        except (ValueError, galit.ChemicalStorageError, galit.ChemicalConflictError) as exc:
+                            _chemical_ui_error(exc)
+
+            reservations = repository.list_reservations()
+            if reservations:
+                st.markdown("##### Резервы")
+                st.dataframe(pd.DataFrame([{
+                    "ID": item.id, "Продукт ID": item.product_id, "Количество, кг": float(item.quantity_kg),
+                    "Требуется": item.required_on.isoformat(), "Статус": item.status, "Ревизия": item.revision,
+                } for item in reservations]), width="stretch", hide_index=True)
+                active = {f"{item.product_id} · {item.quantity_kg} кг · {item.required_on} · {item.id}": item
+                          for item in reservations if item.status == "active"}
+                if active:
+                    release_label = st.selectbox("Активный резерв", list(active), key="chemical-release-id")
+                    release_confirm = st.checkbox("Подтверждаю освобождение резерва",
+                                                  key="chemical-release-confirm")
+                    if st.button("Освободить резерв", key="chemical-release-save"):
+                        if not release_confirm:
+                            st.warning("Сначала явно подтвердите освобождение.")
+                        else:
+                            try:
+                                item = active[release_label]
+                                repository.release_reservation(item.id, revision=item.revision,
+                                                               expected_revision=repository.revision)
+                                st.success("Резерв освобождён; история операции сохранена.")
+                                st.rerun()
+                            except (galit.ChemicalStorageError, galit.ChemicalConflictError,
+                                    galit.ChemicalNotFoundError) as exc:
+                                _chemical_ui_error(exc)
+            transactions = repository.list_transactions()
+            if transactions:
+                with st.expander("Журнал складских транзакций"):
+                    st.dataframe(pd.DataFrame([{
+                        "Дата": item.occurred_at.isoformat(), "Тип": item.kind,
+                        "Продукт ID": item.product_id, "Партия": item.lot_id,
+                        "Количество, кг": float(item.quantity_kg), "Ссылка": item.reference,
+                    } for item in transactions]), width="stretch", hide_index=True)
+
+        with forecast_tab:
+            st.markdown("#### Детерминированный прогноз и риск дефицита")
+            if not products:
+                st.info("Сначала добавьте продукт и реальные складские операции.")
+            else:
+                forecast_product = st.selectbox("Продукт", list(product_labels), key="chemical-forecast-product")
+                f1, f2, f3 = st.columns(3)
+                horizon = int(f1.number_input("Горизонт, суток", min_value=1, value=30, step=1))
+                lead = int(f2.number_input("Срок поставки, суток", min_value=0, value=14, step=1))
+                safety = int(f3.number_input("Страховой запас, суток", min_value=0, value=7, step=1))
+                forecast_as_of = st.date_input("Расчёт на дату", value=date.today(), key="chemical-forecast-asof")
+                view = chemical_forecast_view(
+                    repository, product_labels[forecast_product].id, as_of=forecast_as_of,
+                    horizon_days=horizon, lead_time_days=lead, safety_stock_days=safety,
+                )
+                forecast = view["forecast"]
+                if forecast["status"] != "available":
+                    st.warning("Прогноз недоступен: нет истории списаний. Отсутствие данных не трактуется как нулевой расход.")
+                else:
+                    shortage = view["shortage"]
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Средний расход", f"{_chemical_number(forecast['daily_kg'])} кг/сут")
+                    c2.metric(f"Потребность за {horizon} сут", f"{_chemical_number(forecast['required_kg'])} кг")
+                    c3.metric("Доступно", f"{_chemical_number(shortage['available_kg'])} кг")
+                    c4.metric("Дефицит", f"{_chemical_number(shortage['shortage_kg'])} кг")
+                    if shortage["risk"]:
+                        st.error(f"Риск дефицита: к сроку поставки + страховому окну не хватает {_chemical_number(shortage['shortage_kg'])} кг.")
+                    else:
+                        st.success("Доступный непросроченный остаток покрывает срок поставки и страховой запас.")
+                    st.caption(f"Покрытие: {_chemical_number(shortage['days_cover'])} суток; горизонт: {horizon}; срок поставки: {lead}; страховой запас: {safety}.")
+                st.info("Допущения: " + view["assumptions"])
+
+
 def main() -> None:
     upload, production_mode, include_uncertainty = render_sidebar()
     render_header()
+    # Независимые additive-разделы доступны даже без файла фонда и не меняют legacy upload.
+    render_compatibility_section()
+    render_chemicals_section()
 
     # --- источник данных ---
     results: list[DiagnosisResult] | None = None
@@ -2657,10 +3718,11 @@ def main() -> None:
             st.caption(f"Ещё сигналов: {len(alerts) - 6}. Полный список — в ранжировании.")
 
     st.divider()
-    tab_plan, tab_map, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_equipment, tab_pilot, tab_passport, tab_journal = st.tabs(
-        ["План мастера", "Карта месторождения", "Ранжирование фонда", "Профили T(z) · P(z)",
+    tab_plan, tab_map, tab_watercut, tab_rank, tab_profiles, tab_well, tab_scenario, tab_economics, tab_forecast, tab_equipment, tab_pilot, tab_passport, tab_twin, tab_journal = st.tabs(
+        ["План мастера", "Карта месторождения", "Обводнение", "Ранжирование фонда", "Профили T(z) · P(z)",
          "Детально по скважине", "Что будет, если?", "Экономика риска",
-         "Прогноз во времени", "Оборудование / Прогноз отказов", "Сравнение с baseline / Пилот", "Цифровой паспорт", "Журнал мероприятий"]
+         "Прогноз во времени", "Оборудование / Прогноз отказов", "Сравнение с baseline / Пилот",
+         "Цифровой паспорт", "Цифровой двойник", "Журнал мероприятий"]
     )
 
     # --- первая вкладка: тот же уже сформированный доменный план ---
@@ -2700,27 +3762,58 @@ def main() -> None:
             if task.quality_warnings:
                 st.warning("Предупреждения качества: " + "; ".join(task.quality_warnings))
 
-    # --- карта фонда: цвет = риск, площадь маркера = добыча под риском ---
+    # --- Умная карта 2.0: текущий срез + явная история/GIS без подмены источников ---
     with tab_map:
-        map_data = field_map_data(cases_by_name, results)
-        summary = map_data.summary
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("На карте", f"{summary.mapped_wells} / {summary.total_wells}")
-        m2.metric("Критический", summary.counts_by_status["критический"])
-        m3.metric("Растущий риск", summary.counts_by_status["растущий риск"])
-        m4.metric("Потеря под риском", "—" if summary.possible_oil_loss_m3d is None
-                  else f"{summary.possible_oil_loss_m3d:.1f} м³/сут")
-        if map_data.points:
-            st.plotly_chart(fig_field_map(map_data), width="stretch",
-                            config={"displaylogo": False, "scrollZoom": True,
-                                    "responsive": True})
-            st.caption("Цвет показывает статус риска. Размер маркера — screening-оценку добычи под риском, а не прогноз фактической потери.")
-            st.caption("Зона «Припятский прогиб» показана обзорно для ориентации и не является точной или лицензионной геологической границей. Подложка OpenStreetMap требует интернет; если тайлы недоступны, проверьте соединение — точки и контур останутся интерактивными.")
-            skipped = summary.missing_coordinates + summary.invalid_coordinates
-            if skipped:
-                st.info(f"Не показано скважин: {skipped} (нет полной валидной пары latitude/longitude).")
+        diagnosed = [DiagnosedWell(cases_by_name[x.well], x) for x in results if x.well in cases_by_name]
+        service = smart_map_service(diagnosed)
+        st.markdown("### Умная карта месторождения 2.0")
+        c1,c2,c3,c4 = st.columns(4)
+        mechanism = c1.selectbox("Слой риска", ["integrated","wax","halite","calcite","corrosion","watercut","equipment"], key="smart-map-mechanism")
+        show_heat = c2.checkbox("Heatmap", True, key="smart-map-heat")
+        show_markers = c2.checkbox("Скважины", True, key="smart-map-markers")
+        show_hotspots = c3.checkbox("Системные зоны", True, key="smart-map-hotspots")
+        show_infra = c3.checkbox("Инфраструктура GIS", True, key="smart-map-infra")
+        animate = c4.checkbox("Анимация истории", False, key="smart-map-animation")
+        as_of_date = c4.date_input("Срез as-of", value=datetime.now(timezone.utc).date(), key="smart-map-asof")
+        as_of = datetime(as_of_date.year,as_of_date.month,as_of_date.day,23,59,59,tzinfo=timezone.utc)
+        snapshot = service.snapshot(as_of=as_of, mechanism=mechanism)
+        groups = service.groups(level="cluster", as_of=as_of, mechanism=mechanism)
+        hotspots = service.hotspots(as_of=as_of, mechanism=mechanism) if show_hotspots else []
+        frames = service.frames(mechanism=mechanism) if animate else []
+        k1,k2,k3,k4 = st.columns(4)
+        k1.metric("Точек as-of", snapshot["sample_size"])
+        k2.metric("Coverage", f"{snapshot['coverage']:.0%}")
+        k3.metric("Системных зон", len(hotspots))
+        k4.metric("Кадров истории", len(frames))
+        if snapshot["points"]:
+            st.plotly_chart(fig_smart_map(snapshot,infrastructure=service.infrastructure_geojson() if show_infra else None,
+                hotspots=hotspots,frames=frames,show_heatmap=show_heat,show_markers=show_markers),width="stretch",
+                config={"displaylogo":False,"scrollZoom":True,"responsive":True})
         else:
-            st.info("Карта пока пуста. Добавьте необязательные колонки latitude и longitude (WGS84) в файл фонда; пример есть в шаблоне XLSX.")
+            st.info("Для выбранного as-of/механизма нет свежих точек. Missing не считается нулевым риском.")
+        st.warning(galit.SMART_MAP_DISCLAIMER)
+        st.caption(f"Окно актуальности: {snapshot['stale_after_days']} суток · sample n={snapshot['sample_size']}. Heat-вклад нормирован на размер фонда. Галит и кальцит доступны раздельно.")
+        st.caption("Зона «Припятский прогиб» показана обзорно для ориентации и не является точной или лицензионной геологической границей. Подложка OpenStreetMap требует интернет.")
+        if animate and len(frames)<2: st.info("Анимация недоступна: требуется минимум два датированных среза.")
+        if groups:
+            st.markdown("#### Кусты (административные группы, не hotspot-зоны)")
+            st.dataframe(pd.DataFrame(groups),width="stretch",hide_index=True)
+        if hotspots:
+            st.markdown("#### Ранжированные системные зоны")
+            st.dataframe(pd.DataFrame([{"Зона":z["zone_id"][-8:],"Скважин":len(z["member_wells"]),"Механизмы":", ".join(z["common_mechanisms"]),"Coverage":z["coverage"],"Confidence":z["confidence"]} for z in hotspots]),width="stretch",hide_index=True)
+        with st.expander("Импорт пользовательской инфраструктуры GeoJSON"):
+            upload_gis=st.file_uploader("FeatureCollection: Point facilities / LineString pipelines",type=["geojson","json"],key="smart-map-gis-upload")
+            if upload_gis and st.button("Проверить и импортировать GIS",key="smart-map-gis-submit"):
+                try:
+                    rows=galit.assets_from_geojson(json.loads(upload_gis.getvalue().decode("utf-8")))
+                    for row in rows: service.repository.upsert_asset(row)
+                    st.success(f"Импортировано: {len(rows)}. Реальные объекты не генерируются автоматически.")
+                except (ValueError,json.JSONDecodeError,galit.SmartMapStorageError,galit.SmartMapConflictError) as exc: st.error(str(exc))
+            st.download_button("CSV-шаблон истории рисков",galit.risk_csv_template(),"smart-map-risk-history.csv","text/csv",key="smart-map-risk-template")
+            st.download_button("Экспорт текущего GeoJSON",json.dumps(service.infrastructure_geojson(),ensure_ascii=False,indent=2),"smart-map-infrastructure.geojson","application/geo+json",key="smart-map-export")
+
+    with tab_watercut:
+        render_watercut(get_watercut_repository())
 
     # --- вкладка 1: рейтинг ---
     with tab_rank:
@@ -3091,7 +4184,14 @@ def main() -> None:
                              sorted(cases_by_name))
 
     with tab_equipment:
-        render_equipment_forecasts(galit.EquipmentRepository(os.environ.get("GALIT_EQUIPMENT_STORAGE", "data/equipment.json")))
+        render_equipment_forecasts(galit.EquipmentRepository(equipment_storage_path()))
+
+    with tab_twin:
+        try:
+            twin_service, manual_events = get_twin_components(list(cases_by_name.values()))
+            render_digital_twin(twin_service, manual_events)
+        except Exception as exc:  # UI boundary: a broken optional source must not hide other tabs.
+            st.error(f"Цифровой двойник временно недоступен: {html.escape(str(exc))}")
 
     with tab_journal:
         render_treatment_journal(

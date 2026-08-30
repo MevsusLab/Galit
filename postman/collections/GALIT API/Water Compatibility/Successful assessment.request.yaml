@@ -1,0 +1,42 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/water-compatibility'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "water_a": {
+        "name": "Formation water",
+        "ions_mg_l": {"Na": 20000, "Cl": 32000, "Ca": 4000, "Ba": 1000, "HCO3": 50, "SO4": 0},
+        "ph": 6.2,
+        "t_c": 25,
+        "p_pa": 5000000
+      },
+      "water_b": {
+        "name": "Injection water",
+        "ions_mg_l": {"Na": 1000, "Cl": 1500, "Ca": 100, "Ba": 0, "HCO3": 300, "SO4": 3000},
+        "ph": 7.0,
+        "t_c": 25,
+        "p_pa": 100000
+      },
+      "fractions_b": [0, 0.25, 0.5, 0.75, 1],
+      "profile": [
+        {"depth_m": 0, "t_c": 25, "p_pa": 100000},
+        {"depth_m": 1000, "t_c": 35, "p_pa": 8000000}
+      ],
+      "flow_direction": "bottom_to_surface",
+      "dose_response": {
+        "product": "Example inhibitor",
+        "mineral": "barite",
+        "validated": true,
+        "validation_reference": "example-lab-report-not-for-field-use",
+        "points": [
+          {"dose_mg_l": 10, "maximum_supported_si": -10},
+          {"dose_mg_l": 20, "maximum_supported_si": 100}
+        ]
+      }
+    }

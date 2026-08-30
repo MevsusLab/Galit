@@ -1,0 +1,27 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/water-compatibility'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "water_a": {
+        "name": "Formation water",
+        "ions_mg_l": {"Na": 20000, "Cl": 32000, "Ca": 4000, "Ba": 1000, "HCO3": 50, "SO4": 0},
+        "ph": 6.2,
+        "t_c": 25,
+        "p_pa": 5000000
+      },
+      "water_b": {
+        "name": "Injection water",
+        "ions_mg_l": {"Na": 1000, "Cl": 1500, "Ca": 100, "Ba": 0, "HCO3": 300, "SO4": 3000},
+        "ph": 7.0,
+        "t_c": 25,
+        "p_pa": 100000
+      },
+      "fractions_b": [0.5, 0.25]
+    }

@@ -1,0 +1,7 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/watercut/links?top_n=30'
+order: 6000
+queryParams:
+  - key: top_n
+    value: '30'

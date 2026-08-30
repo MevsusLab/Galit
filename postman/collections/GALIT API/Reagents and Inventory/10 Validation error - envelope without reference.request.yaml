@@ -1,0 +1,18 @@
+$kind: http-request
+method: PUT
+url: '{{base_url}}/api/v1/chemicals/envelopes/demo-invalid-envelope-f9'
+order: 10000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "id": "demo-invalid-envelope-f9",
+      "product_id": "demo-inhibitor-f9",
+      "hazard": "halite",
+      "points": [{"dose": 25, "unit": "g/m3", "effective": true}],
+      "validated": true,
+      "conditions": "SYNTHETIC DEMO negative validation case: reference intentionally omitted."
+    }

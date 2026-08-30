@@ -1,0 +1,10 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/twins/Well-1/changes?limit=10'
+order: 4000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('Status is 200 or unknown well', () => pm.expect([200, 404]).to.include(pm.response.code));
+      if (pm.response.code === 200) pm.test('Association disclaimer exists', () => pm.expect(pm.response.json().disclaimer).to.be.a('string'));

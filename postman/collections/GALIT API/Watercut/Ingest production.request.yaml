@@ -1,0 +1,21 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/watercut/production'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    [
+      {
+        "well": "Добывающая 139",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "q_oil_m3d": 12,
+        "q_water_m3d": 28,
+        "water_cut": 70,
+        "water_cut_unit": "percent",
+        "status": "active"
+      }
+    ]

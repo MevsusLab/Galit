@@ -1,0 +1,4 @@
+$kind: collection
+name: Digital Twin
+order: 12000
+description: 'Unified digital-twin timeline, snapshots, explanations, and manual events.'

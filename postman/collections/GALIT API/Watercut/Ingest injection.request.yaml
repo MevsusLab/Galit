@@ -1,0 +1,20 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/watercut/injection'
+order: 3000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    [
+      {
+        "well": "Нагнетательная 82",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "injection_rate_m3d": 180,
+        "injection_pressure": 12,
+        "pressure_unit": "mpa",
+        "status": "active"
+      }
+    ]

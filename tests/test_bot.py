@@ -111,6 +111,49 @@ def test_import_does_not_load_bot_token():
     assert tb.BOT_TOKEN == ""
 
 
+# ---------------------------------------------------- compatibility waters
+
+def _compatibility_row(name="Вода <A>"):
+    return (f"name={name}; Na=20000; Cl=32000; Ca=4000; Ba=1000; "
+            "SO4=300; HCO3=50; pH=6,2; T=25; P=5")
+
+
+def test_compatibility_parser_requires_measured_chemistry_without_defaults():
+    water = tb.parse_compatibility_water(_compatibility_row())
+    assert water.name == "Вода <A>" and water.ph == 6.2 and water.p_pa == 5e6
+    assert set(water.ions_mg_l) == {"Na", "Cl", "Ca", "Ba", "SO4", "HCO3"}
+    with pytest.raises(ValueError, match="нет измеренных полей"):
+        tb.parse_compatibility_water("name=A; Na=1; Cl=2; pH=7; T=25; P=1")
+    assert water.ions_mg_l != tb.TYPICAL_BRINE
+
+
+def test_compatibility_csv_requires_exactly_two_rows():
+    csv_data = ("name,Na,Cl,Ca,Ba,SO4,HCO3,pH,T,P\n"
+                "A,20000,32000,4000,1000,0,50,6.2,25,5\n"
+                "B,1000,1500,100,0,3000,300,7,25,0.1\n").encode()
+    (a, b), profile, curve = tb.parse_compatibility_document(csv_data, "waters.csv")
+    assert (a.name, b.name) == ("A", "B") and profile is None and curve is None
+    with pytest.raises(ValueError, match="ровно две"):
+        tb.parse_compatibility_document(csv_data.splitlines(keepends=True)[0] +
+                                        csv_data.splitlines(keepends=True)[1], "waters.csv")
+
+
+def test_compatibility_report_has_four_salts_ratio_limits_and_escaping():
+    a = tb.parse_compatibility_water(_compatibility_row())
+    b = tb.parse_compatibility_water(_compatibility_row("B&2").replace("SO4=300", "SO4=3000"))
+    result = galit.evaluate_compatibility(a, b, [0, .5, 1], [
+        galit.ProfilePoint(0, 25, 1e5), galit.ProfilePoint(1000, 35, 5e6)])
+    chunks = tb.format_compatibility_report(result, a, b)
+    text = "\n".join(chunks)
+    assert all(len(chunk) <= tb.TELEGRAM_TEXT_LIMIT for chunk in chunks)
+    for mineral in ("Кальцит", "Барит", "Гипс", "Галит"):
+        assert mineral in text
+    assert "Опасное A:B" in text and "Небезопасные интервалы" in text
+    assert "Вероятная зона" in text and "лабораторная/валидированная" in text
+    assert "Вода <A>" not in text and "Вода &lt;A&gt;" in text and "B&amp;2" in text
+    assert "/compatibility" in tb.HELP_TEXT
+
+
 # ------------------------------------------------------------- сборка кейса
 
 def test_build_case_supports_optional_coordinates():
@@ -408,3 +451,116 @@ def test_treatment_help_documents_argument_commands_and_measurement_units():
         assert command in tb.HELP_TEXT
     assert "key=value" in tb.HELP_TEXT and "before=" in tb.HELP_TEXT
     assert "м³/сут" in tb.HELP_TEXT and "валюты и единицы" in tb.HELP_TEXT
+
+# ------------------------------------------------------- chemical inventory
+
+def _chemical_repo(tmp_path):
+    repo = galit.ChemicalRepository(tmp_path / "chemicals.json")
+    product = galit.ChemicalProduct(
+        "chem-1", "Ингибитор <A>", "Vendor & Co", ("aspo",),
+        price_per_kg="10", currency="BYN",
+    )
+    repo.put_product(product)
+    return repo, product
+
+
+def test_chemical_parser_and_formatters_escape_and_keep_unknown_explicit(tmp_path):
+    values, errors = tb.parse_chemical_command(
+        '/reagent риски=aspo fluid=80 oil=8 product="Ингибитор A"'
+    )
+    assert errors == [] and values["hazards"] == "aspo" and values["oil_m3_day"] == "8"
+    _, errors = tb.parse_chemical_command('/stock mystery=1')
+    assert errors and "неверный параметр" in errors[0]
+    repo, product = _chemical_repo(tmp_path)
+    text = "\n".join(tb.format_reagents([product]))
+    assert "Ингибитор <A>" not in text and "Ингибитор &lt;A&gt;" in text
+    unavailable = galit.ChemicalRecommendation("unavailable", ("aspo",), reason="no validated evidence")
+    rendered = "\n".join(tb.format_recommendations([unavailable]))
+    assert "Недоступно" in rendered and "no validated evidence" in rendered
+
+
+def test_reagent_formatter_uses_only_core_validated_evidence(tmp_path):
+    repo, product = _chemical_repo(tmp_path)
+    no_evidence = galit.recommend_products(repo.list_products(), [], ["aspo"], 80, 8)
+    assert no_evidence[0].status == "unavailable"
+    envelope = galit.ChemicalDoseResponseEnvelope(
+        "ev-1", product.id, "aspo",
+        (galit.ChemicalDoseResponsePoint("0.02", False),
+         galit.ChemicalDoseResponsePoint("0.03", True)),
+        True, "LAB-42", "field-matched test",
+    )
+    repo.put_envelope(envelope)
+    rows = galit.recommend_products(repo.list_products(), repo.list_envelopes(), ["aspo"], 80, 8)
+    text = "\n".join(tb.format_recommendations(rows))
+    assert rows[0].dose_kg_m3 == tb.Decimal("0.03")
+    assert "0.03 кг/м³" in text and "ev-1" in text and "LAB-42" not in text
+
+
+def test_stock_and_shortage_states_are_evidence_driven(tmp_path):
+    repo, product = _chemical_repo(tmp_path)
+    rows = tb.chemical_shortage_rows(repo, lead_time_days=5, safety_stock_days=2,
+                                     as_of=tb.date.today())
+    text = "\n".join(tb.format_shortages(rows, 5, 2))
+    assert "не определено" in text and "нет истории расхода" in text
+    stock_text = "\n".join(tb.format_stock(product, repo.stock(product.id)))
+    assert "0 кг" in stock_text and "Годных доступных партий нет" in stock_text
+
+
+def test_reservation_preview_confirm_and_stale_revision_safety(tmp_path):
+    repo, product = _chemical_repo(tmp_path)
+    now = tb.datetime.now(tb.timezone.utc)
+    lot = galit.StockLot("lot-1", product.id, now, tb.date.today() + tb.timedelta(days=30), "20")
+    repo.add_lot(lot, idempotency_key="seed")
+    values, errors = tb.parse_chemical_command(
+        f"/reserve product={product.id} quantity=5 required={(tb.date.today() + tb.timedelta(days=1)).isoformat()}"
+    )
+    assert errors == []
+    preview = tb.build_reservation_preview(values, repo, idempotency_key="reserve-1")
+    assert repo.list_reservations() == []
+    assert "Данные ещё не изменены" in tb.format_mutation_preview(preview)
+    saved = tb.execute_chemical_preview(repo, preview)
+    assert saved.quantity_kg == tb.Decimal("5") and saved.status == "active"
+    stale = tb.build_reservation_preview(values | {"quantity_kg": "1"}, repo,
+                                         idempotency_key="reserve-stale")
+    repo.reserve(product.id, "1", tb.date.today() + tb.timedelta(days=1),
+                 idempotency_key="other")
+    with pytest.raises(galit.ChemicalConflictError, match="revision conflict"):
+        tb.execute_chemical_preview(repo, stale)
+
+
+def test_transaction_preview_requires_confirmation_and_uses_core_fefo(tmp_path):
+    repo, product = _chemical_repo(tmp_path)
+    receipt_values, errors = tb.parse_chemical_command(
+        f"/transaction product={product.id} kind=receipt quantity=12 lot=lot-1 "
+        f"expires={(tb.date.today() + tb.timedelta(days=90)).isoformat()} reference=PO-1"
+    )
+    assert errors == []
+    receipt = tb.build_transaction_preview(receipt_values, repo, idempotency_key="tx-receipt")
+    assert repo.list_lots() == []
+    tb.execute_chemical_preview(repo, receipt)
+    consume_values, _ = tb.parse_chemical_command(
+        f"/transaction product={product.id} kind=consumption quantity=2 reference=well-1"
+    )
+    consume = tb.build_transaction_preview(consume_values, repo, idempotency_key="tx-use")
+    result = tb.execute_chemical_preview(repo, consume)
+    assert len(result) == 1 and result[0].kind == "consumption"
+    assert repo.stock(product.id)["available_kg"] == "10"
+
+
+def test_chemical_mutation_validation_rejects_missing_unsafe_or_undefined(tmp_path):
+    repo, product = _chemical_repo(tmp_path)
+    with pytest.raises(ValueError, match="не заданы"):
+        tb.build_reservation_preview({"product_id": product.id}, repo, idempotency_key="x")
+    with pytest.raises(galit.ChemicalConflictError, match="insufficient"):
+        tb.build_reservation_preview({
+            "product_id": product.id, "quantity_kg": "1",
+            "required_on": (tb.date.today() + tb.timedelta(days=1)).isoformat(),
+        }, repo, idempotency_key="x")
+    with pytest.raises(ValueError, match="lot"):
+        tb.build_transaction_preview({
+            "product_id": product.id, "quantity_kg": "1", "kind": "expiry",
+            "reference": "expired",
+        }, repo, idempotency_key="x")
+    assert tb.ChemicalMutation.confirming
+    for command in ("/reagent", "/reagents", "/stock", "/shortages", "/reserve", "/transaction"):
+        assert command in tb.HELP_TEXT

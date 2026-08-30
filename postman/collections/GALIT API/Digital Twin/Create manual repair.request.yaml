@@ -1,0 +1,32 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/twins/events'
+order: 5000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "source_record_id": "postman-repair-001",
+      "well": "Well-1",
+      "field": "Example field",
+      "occurred_at": "2026-01-15T10:00:00+03:00",
+      "category": "repair",
+      "event_type": "workover",
+      "title": "Ремонт насоса",
+      "summary": "Ручная запись; фактические результаты не выдумываются",
+      "severity": "info",
+      "metrics": {
+        "duration": {"value": 8, "unit": "h", "quality": "manual"}
+      }
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('Created idempotently', () => pm.response.to.have.status(201));
+      pm.test('Event schema', () => {
+        const json = pm.response.json(); pm.expect(json.event_id).to.be.a('string'); pm.expect(json.occurred_at).to.be.a('string');
+      });

@@ -1,0 +1,16 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/chemicals/shortages'
+order: 9000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "product_id": "demo-inhibitor-f9",
+      "as_of": "2026-08-23",
+      "lead_time_days": 5,
+      "safety_stock_days": 2
+    }

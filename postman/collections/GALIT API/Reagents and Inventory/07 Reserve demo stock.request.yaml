@@ -1,0 +1,17 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/chemicals/reservations'
+order: 7000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "product_id": "demo-inhibitor-f9",
+      "quantity": 2,
+      "unit": "kg",
+      "required_on": "2026-09-01",
+      "idempotency_key": "demo-f9-reservation-v1"
+    }

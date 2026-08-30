@@ -684,3 +684,9 @@ def rank_wells(
     """Ранжирование фонда с единым immutable runtime config."""
     results = [diagnose(c, runtime_calibration=runtime_calibration) for c in cases]
     return sorted(results, key=lambda r: r.integrated_risk, reverse=True)
+
+
+def water_compatibility(*args, **kwargs):
+    """Additive integrated-core entry point for the separately versioned model."""
+    from .compatibility import evaluate_compatibility
+    return evaluate_compatibility(*args, **kwargs)

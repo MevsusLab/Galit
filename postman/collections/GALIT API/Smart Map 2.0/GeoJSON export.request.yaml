@@ -1,0 +1,12 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/smart-map/geojson'
+order: 5000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("FeatureCollection", () => {
+        pm.response.to.have.status(200);
+        pm.expect(pm.response.json().type).to.eql("FeatureCollection");
+      });

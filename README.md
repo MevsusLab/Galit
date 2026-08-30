@@ -164,6 +164,55 @@
 
 ---
 
+### Совместимость двух вод (feature 8)
+
+`galit/compatibility.py` выполняет детерминированный инженерный screening смеси двух **измеренных** вод. Для сетки долей воды B он отдельно возвращает SI кальцита, барита, гипса и галита, наиболее опасное соотношение A:B и интервалы с `SI > 0`. При передаче измеренного профиля `depth_m/t_c/p_pa` также оценивается первая точка пересыщения по направлению потока и глубина максимального SI. Пустой ион означает «нет данных»: он не заменяется типовым составом или нулём, поэтому зависимый минерал помечается как нерассчитанный.
+
+Обязательные входы для каждой воды: `name`, `ions_mg_l` (мг/л), `ph`, `t_c` (°C), `p_pa` (Па). Для полного четырёхминерального screening нужны `Na`, `Cl`, `Ca`, `Ba`, `SO4` и `HCO3` или `CO3` в обоих анализах. `fractions_b` необязателен (по умолчанию 0…1 с шагом 0,01), должен быть строго возрастающим и содержать не более 1001 значения. Профиль необязателен, содержит до 2000 точек со строго возрастающей глубиной. Доза ингибитора возвращается **только** из переданной монотонной лабораторно валидированной кривой конкретного продукта и минерала; интерполяция и экстраполяция запрещены.
+
+Запуск и использование:
+
+```powershell
+# API и OpenAPI UI
+.\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
+# POST http://127.0.0.1:8000/api/v1/water-compatibility
+
+# Dashboard: раздел «Совместимость двух вод» и скачиваемый XLSX-шаблон
+.\.venv\Scripts\python.exe -m streamlit run dashboard.py
+
+# Telegram: затем отправьте /compatibility и две строки из подсказки или CSV/XLSX
+.\.venv\Scripts\python.exe telegram_bot.py
+```
+
+Готовые тела запросов находятся в локальной Postman v3 YAML collection: `postman/collections/GALIT API/Water Compatibility/`. Успешный пример включает профиль и демонстрационную кривую дозирования; её ссылка явно тестовая и не разрешает промысловое применение. Пример ошибки отправляет неотсортированный `fractions_b` и ожидаемо получает HTTP 400.
+
+> Это **инженерный screening-инструмент**, а не промышленно откалиброванная модель. Линейное смешение не моделирует полную специацию, буферность, реакционное истощение, кинетику, массу осадка и транспорт; для барита/гипса используется Ksp при 25 °C и Davies с явными предупреждениями, для галита — упрощённая activity-модель. Любые решения и дозировки требуют лабораторной проверки на фактических водах и условиях, а затем полевой валидации.
+
+### Умная карта месторождения 2.0
+
+`galit/smart_map.py` — typed service/policy layer пространственно-временного screening. Он не дублирует профильные источники: текущая диагностика подключается адаптером, а versioned JSON (`GALIT_SMART_MAP_STORAGE`, по умолчанию `data/smart_map.json`) хранит только явные исторические risk snapshots и валидированную пользовательскую инфраструктуру. Запись UTF-8, atomic `os.replace`, thread/process lock; IDs детерминированы по строгой `WellIdentity` с контекстом `field/cluster/site/reservoir`.
+
+Risk observation: timezone-aware `occurred_at`, WGS84 `latitude/longitude`, роль `producer|injector|unknown`, nullable тяжести `halite/calcite/wax/corrosion/watercut/equipment`, nullable integrated risk, provenance/source quality и экономический ущерб только с явными `currency+unit`. Missing не равен нулю; as-of carry-forward ограничен 45 сутками. Heat-вклад каждой точки нормируется на размер актуального фонда. Plotly 6.9 `Densitymap` и `Scattermap` работают на OSM без token; галит и кальцит можно смотреть раздельно.
+
+Кусты/участки агрегируются вместе с field, поэтому одинаковые названия разных месторождений не сливаются. Деньги группируются отдельными совместимыми `(currency, unit)` buckets. Emergent hotspot отделён от административной группы: минимум 3 ухудшающиеся скважины в star-neighbourhood 3 км за 30 суток, без повторного учёта скважины и single-link chain artefact. Направление распространения доступно только при ≥3 временных кадрах с ≥2 скважинами; это низко/средне-достоверное движение центроида, не причинная связь. Кадры детерминированы, ограничены 24; policy caps защищают UI от чрезмерного числа точек/кадров.
+
+- **Dashboard:** существующая вкладка «Карта месторождения» обновлена: mechanism/as-of, heatmap, роли, группы, hotspot-зоны, анимация, coverage/KPI, таблицы и GIS import/export. Обзорный контур Припятского прогиба не является точной или лицензионной границей.
+- **Telegram:** `/areas`, `/hotspots [days]`, `/cluster <name>`, `/spread [mechanism] [days]`; HTML экранируется, отчёты дробятся, неоднозначные кусты разных fields не объединяются.
+- **API:** `/api/v1/smart-map/observations`, `/snapshot`, `/groups`, `/hotspots`, `/frames`, `/spread`, `/infrastructure`, `/infrastructure/import`, `/geojson`; timezone/WGS84/Pydantic validation, pagination и идемпотентные IDs.
+- **Postman:** локальная v3 YAML папка `Smart Map 2.0` содержит ingest, snapshot, hotspot, GIS import и GeoJSON export.
+
+GIS-контракт — GeoJSON `FeatureCollection`: пользовательские `LineString|MultiLineString` для `pipeline|flowline|waterline|road|other`, `Point` для `gathering|treatment|injection|metering|other`; обязательны `id`, `name`, `asset_type`, валидный `status`, WGS84. `diameter/capacity` допустимы только с единицей. Система не создаёт и не подразумевает реальные трубопроводы или объекты Белоруснефти; demo-сущности обязаны иметь `synthetic: true`. CSV-шаблон истории доступен на сайте. Будущие GIS/SCADA/LIMS/EAM могут быть подключены адаптерами с устойчивыми source IDs, но сейчас не заявляются подключёнными.
+
+> Геоаналитика — объяснимый screening, не доказательство пространственной причинности. Всегда учитывайте coverage, sample size, окно и качество данных; проверяйте альтернативы: общий режим, ошибку измерений и инфраструктурное событие.
+
+### Диагностика обводнения
+
+Модуль `galit/watercut.py` хранит metadata добывающих/нагнетательных скважин и временные истории в versioned JSON (`GALIT_WATERCUT_STORAGE`, по умолчанию `data/watercut.json`): UTF-8, межпоточный/файловый lock, atomic `os.replace`, идемпотентность по `id=well|timestamp`. CSV-шаблоны доступны во вкладке **«Обводнение»**. Metadata: `well,role,latitude,longitude,field_name,cluster,site,reservoir,zone,layer,commissioning_date`; добыча: `timestamp,q_oil_m3d,q_water_m3d,liquid_rate_m3d,water_cut,water_cut_unit,pressure,pressure_unit,choke,downtime_hours,status`; закачка: `timestamp,injection_rate_m3d,injection_pressure,pressure_unit,status`. Обводнённость из дебитов имеет приоритет, а конфликт явного поля помечается quality flag.
+
+Policy `galit-watercut-screening-1.0` детерминированно оценивает robust baseline/median pairwise slope, absolute и relative рост, onset window; строит неотрицательный **baseline estimate** нефти на 7/30/90 суток с диапазоном; ранжирует нагнетатели по haversine distance, совпадению field/reservoir/zone/layer, изменению закачки, лагу и overlap. Разные явно заданные пласты исключаются. Карта показывает producer/injector разными символами и top-N направленных связей injector → producer. API: `PUT/GET /api/v1/watercut/metadata`, `POST/GET .../production`, `POST/GET .../injection`, `GET .../diagnose/{well}`, `GET .../diagnose`, `GET .../links`. Telegram: `/watercut [well]`, `/breakthroughs`, `/injectors [producer]`.
+
+> Результат — объяснимая инженерная screening-гипотеза возможного влияния/прорыва, **не причинное доказательство**. Без трассеров, гидродинамической модели и размеченной истории нельзя подтверждать прорыв нагнетательной воды. Сначала проверяются замеры, режим/насос и пробы/ионный fingerprint, затем трассер/ГДИС. Оптимизация закачки допускается только после инженерного подтверждения; автоматических управляющих команд нет. Для калибровки следует зафиксировать label policy, собрать достаточную синхронную историю, выполнить временной holdout, проверить precision/recall ранжирования и устойчивость порогов, затем выпустить новую версию `WatercutPolicy`.
+
 ### Прогноз отказов ЭЦН и ШГН
 
 Модуль `galit/equipment.py` выполняет объяснимую инженерную **baseline/screening**-оценку, а не подтверждённый ML-прогноз. Поддерживаются ЭЦН (`ESP`) и ШГН (`ROD_PUMP`); фонтанный и иной фонд получает `not_applicable`. Результат содержит индекс 0…1, уровень, диапазон RUL, ранжированные причины и вклад, аномалии тока/давления/температуры/вибрации, специфичные сигналы ШГН, отдельный вклад галита/кальцита/АСПО/коррозии/песка, ISO-окно обслуживания, качество, версию и дисклеймер.
@@ -171,6 +220,48 @@
 Хранилище JSON schema v1 задаётся `GALIT_EQUIPMENT_STORAGE` (по умолчанию `data/equipment.json`), использует UTF-8, lock и atomic `os.replace`. CSV-шаблон доступен на вкладке «Оборудование / Прогноз отказов»; timestamps обязаны иметь timezone, давление в одной строке — одну явную единицу `pa|kpa|mpa|bar`, nullable значения допустимы. API: `POST/GET /api/v1/equipment`, `POST/GET /api/v1/equipment/telemetry`, `GET /api/v1/equipment/forecast/{well}`, `GET /api/v1/equipment/forecast`, `GET /api/v1/equipment/maintenance`. Telegram: `/equipment [скважина]`, `/failures`, `/maintenance`.
 
 Политика v1 агрегирует telemetry и process indicators раздельно (75%/25%), чтобы не удваивать осложнения. Одиночный snapshot снижает confidence, история добавляет простой тренд. RUL — только сценарный диапазон; при слабых данных он широкий или недоступен. Критические температура/вибрация/нагрузка требуют немедленной инженерной проверки и действий только по действующим регламентам, без автоматического управления. Для промышленного применения необходимо собрать размеченную историю монтажей, режимов, ремонтов и отказов Белоруснефти, определить горизонты/типы отказа, выполнить временной holdout, калибровку вероятностей и независимую валидацию; архитектура допускает замену `EquipmentRiskPolicy/forecast_equipment` без изменения API и интерфейсов.
+
+### Цифровой двойник фонда скважин
+
+`galit/digital_twin.py` — расширяемый service/adaptor layer поверх существующих `WatercutRepository`, `EquipmentRepository`, `TreatmentRepository` и `PassportRepository`: исходные репозитории остаются источниками истины, их записи не копируются. Отдельное versioned JSON-хранилище содержит только ручные ремонты, отказы и лабораторные события (`GALIT_TWIN_EVENT_STORAGE`, по умолчанию `data/digital_twin_events.json`): UTF-8, process/thread lock, atomic `os.replace`, детерминированный `event_id` и идемпотентная запись. CSV-шаблон доступен на сайте.
+
+Идентичность — строгая нормализация регистра, пробелов и тире плюс контекст `field/cluster/site/reservoir`. Одинаковый номер в разных месторождениях не объединяется: запрос без контекста получает ambiguity/HTTP 409. Событие schema v1 содержит timezone-aware `occurred_at/recorded_at`, категорию, тип, источник и устойчивый source ID, severity/status, текст, метрики с явными единицами, provenance/quality и metadata. Nullable и частичные источники штатны.
+
+Snapshot as-of показывает последние метрики с `as_of/source/freshness/unit/quality`, ремонты, лабораторию, обработки, осложнения и деньги только раздельно по совместимым валютам. `normal/watch/critical/insufficient_data` — прозрачная policy-based screening-сводка, не подтверждённый ML. Объяснения сопоставляют before/after вокруг значимых событий и используют формулировку «изменение последовало после»; временная последовательность не доказывает причинность, альтернативы и confidence обязательны.
+
+- **Dashboard:** отдельная вкладка «Цифровой двойник» работает даже без загруженного фонда: выбор скважины/периода/категорий, freshness, unified timeline, KPI, evidence cards и форма ручного события.
+- **Telegram:** `/twin [well]`, `/timeline [well] [days]`, `/changes [well]`; ответы экранируются, разбиваются на части и явно сообщают ambiguity/insufficient data.
+- **API:** `GET /api/v1/twins`, `GET /api/v1/twins/{well}/snapshot`, `/timeline?from=&to=&category=&limit=&cursor=`, `/changes`, `POST /api/v1/twins/events`. Неизвестная скважина — 404, неоднозначность/конфликт — 409, validation — 422; даты ISO 8601 с timezone.
+- **Postman:** папка `Digital Twin` в локальной v3 YAML collection содержит примеры и проверки статуса/контракта.
+
+Будущие SCADA/историк, LIMS и EAM подключаются новыми адаптерами с устойчивыми source IDs. Они **не считаются подключёнными сейчас**; качество и свежесть всегда отражают реально доступные источники.
+
+### Реагенты и склад (Feature 9)
+
+Контур `galit/chemicals.py` отделён от истории обработок и работает по принципу **validated evidence/reference only**. Каталог продукта (`id`, производитель, риски, плотность, цена за кг и валюта) сам по себе не доказывает эффективность. Для рекомендации нужен отдельный конверт dose-response с `validated=true`, непустым `validation_reference`, условиями испытаний и уникальными фактически испытанными точками. Система выбирает минимальную эффективную **испытанную** дозу; интерполяция и экстраполяция запрещены. Для нескольких рисков один продукт должен покрывать каждый риск отдельным валидированным конвертом, а совместимость должна быть указана явно.
+
+Рекомендация принимает риски, объём обрабатываемой жидкости и дебит нефти. Доза хранится в `kg/m3`; API также принимает `mg/L` и `g/m3` с точным пересчётом. Суточный расход равен `dose_kg_m3 × treated_fluid_m3_day`, стоимость — расходу × цене за кг, а стоимость на м³ нефти — суточной стоимости / `oil_m3_day`. При нулевом дебите нефти кандидат остаётся доступным, но `cost_per_m3_oil=null`: показатель **не определён**, а не равен нулю. Цена без валюты и объём без плотности отклоняются.
+
+Склад ведётся по партиям и FEFO (сначала ближайший срок годности). Поступление создаёт партию и append-only транзакцию; расход раскладывается по годным партиям; корректировка, списание по сроку и возврат добавляются отдельными транзакциями. Идемпотентный ключ защищает от повторной записи, optimistic revision — от устаревшего изменения. Резерв на дату распределяется только по неистёкшим партиям и уменьшает доступный остаток; освобождение требует актуальной ревизии резерва. Отрицательный остаток и резерв сверх доступного количества запрещены.
+
+Прогноз потребления — прозрачное среднее фактического расхода на календарный день от первой записи до `as_of`; без истории статус `unavailable`. Риск дефицита сравнивает доступный остаток с `daily_kg × (lead_time_days + safety_stock_days)` и возвращает `risk`, `shortage_kg` и покрытие в днях. Это детерминированный операционный baseline, не промышленный прогноз.
+
+Хранилище задаётся переменной `GALIT_CHEMICAL_STORAGE`; по умолчанию это `data/chemicals.json` относительно рабочего каталога процесса:
+
+```powershell
+$env:GALIT_CHEMICAL_STORAGE = "$PWD\data\chemicals-demo.json"
+.\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
+# Dashboard (в другом окне с той же переменной окружения)
+.\.venv\Scripts\python.exe -m streamlit run dashboard.py
+# Telegram (нужен отдельно настроенный токен; секреты в репозиторий не добавлять)
+.\.venv\Scripts\python.exe telegram_bot.py
+```
+
+API: `GET/PUT /api/v1/chemicals/products`, `GET/PUT /api/v1/chemicals/envelopes`, `POST /recommendations`, `GET/POST /lots`, `GET/POST /transactions`, `POST /consume`, `GET /stock/{product_id}`, `GET/POST /reservations`, `POST /reservations/{id}/release`, `POST /forecasts`, `POST /shortages` (все пути начинаются с `/api/v1/chemicals`). Dashboard содержит раздел «Реагенты и склад». Telegram: `/reagents`, `/reagent hazards=halite fluid=100 oil=10`, `/stock product=ID`, `/shortages lead=14 safety=7`; `/reserve` и `/transaction` требуют отдельного подтверждения.
+
+Локальный Postman v3 YAML workflow находится в `postman/collections/GALIT API/Reagents and Inventory/`. Запускайте запросы по номеру на отдельном demo-файле: синтетический продукт → синтетический валидированный конверт → рекомендация → приход → остаток → демонстрационный расход → резерв → прогноз → риск дефицита → отрицательные проверки. Все сущности помечены `DEMO`/`SYNTHETIC` и **не являются полевыми продуктами или основанием для промышленной дозировки**.
+
+Ограничения: JSON schema v1 записывается атомарной заменой UTF-8-файла и защищена только внутрипроцессным `RLock`; это **single-process JSON prototype**, небезопасный для нескольких API workers/процессов и не замена транзакционной БД, резервному копированию и аудиту доступа. Не заявляется промышленная точность. История наблюдательных обработок (`treatments`) не создаёт, не обновляет и не «обучает» конверты эффективности автоматически: причинность из наблюдений не выводится; доказательства вводятся только явно после лабораторной/полевой проверки ответственным специалистом.
 
 ## 4. Установка
 

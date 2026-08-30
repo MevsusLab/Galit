@@ -1,0 +1,15 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/chemicals/recommendations'
+order: 3000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "hazards": ["halite"],
+      "treated_fluid_m3_day": 100,
+      "oil_m3_day": 10
+    }

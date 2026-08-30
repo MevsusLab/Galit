@@ -1,0 +1,4 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/watercut/diagnose'
+order: 5000

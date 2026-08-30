@@ -1,0 +1,3 @@
+$kind: collection
+name: Reagents and Inventory
+description: 'Synthetic demo-only Feature 9 workflow. Run requests in numeric order against a disposable GALIT_CHEMICAL_STORAGE file. No field-valid product, industrial dosing claim, interpolation, extrapolation, or observational-history learning is implied.'

@@ -1,0 +1,19 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/chemicals/lots'
+order: 11000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "id": "demo-invalid-lot-f9",
+      "product_id": "demo-inhibitor-f9",
+      "received_at": "2026-08-23T12:00:00",
+      "expires_on": "2035-12-31",
+      "quantity": 1,
+      "unit": "kg",
+      "idempotency_key": "demo-f9-invalid-naive-time"
+    }

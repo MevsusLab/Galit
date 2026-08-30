@@ -1,0 +1,4 @@
+$kind: collection
+name: 'Smart Map 2.0'
+description: 'Explainable geospatial screening. Infrastructure is user-supplied; no real production assets are fabricated.'
+order: 5000

@@ -1,0 +1,22 @@
+$kind: http-request
+method: PUT
+url: '{{base_url}}/api/v1/chemicals/products/demo-inhibitor-f9'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "id": "demo-inhibitor-f9",
+      "name": "DEMO Synthetic Halite Inhibitor F9",
+      "manufacturer": "DEMO Synthetic Manufacturer",
+      "hazards": ["halite"],
+      "compatible_with": [],
+      "density_kg_l": 1.2,
+      "price_per_kg": 2.5,
+      "currency": "BYN",
+      "active": true,
+      "notes": "SYNTHETIC DEMO ONLY. Not a field-valid product and not for industrial dosing."
+    }

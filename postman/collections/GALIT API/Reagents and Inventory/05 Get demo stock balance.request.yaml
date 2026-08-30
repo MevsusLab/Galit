@@ -1,0 +1,7 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/chemicals/stock/demo-inhibitor-f9?as_of=2026-08-23'
+order: 5000
+queryParams:
+  - key: as_of
+    value: '2026-08-23'

@@ -1,0 +1,24 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/smart-map/infrastructure/import'
+order: 4000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "type": "FeatureCollection",
+      "features": [{
+        "type": "Feature",
+        "id": "demo-user-facility-1",
+        "geometry": {"type": "Point", "coordinates": [30.7, 52.4]},
+        "properties": {"name": "DEMO user facility", "asset_type": "treatment", "status": "unknown", "synthetic": true}
+      }]
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Validated GIS import", () => pm.expect(pm.response.code).to.eql(201));

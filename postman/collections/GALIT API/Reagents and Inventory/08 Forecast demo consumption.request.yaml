@@ -1,0 +1,15 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/chemicals/forecasts'
+order: 8000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "product_id": "demo-inhibitor-f9",
+      "as_of": "2026-08-23",
+      "horizon_days": 10
+    }

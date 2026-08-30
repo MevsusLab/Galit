@@ -1,0 +1,18 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/smart-map/snapshot?mechanism=wax&as_of=2026-08-23T23%3A59%3A59Z'
+order: 2000
+queryParams:
+  - key: mechanism
+    value: wax
+  - key: as_of
+    value: '2026-08-23T23:59:59Z'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Snapshot contract", () => {
+        pm.response.to.have.status(200);
+        const body = pm.response.json();
+        pm.expect(body).to.have.keys("as_of", "mechanism", "points", "sample_size", "coverage", "stale_after_days", "disclaimer", "alternatives");
+      });

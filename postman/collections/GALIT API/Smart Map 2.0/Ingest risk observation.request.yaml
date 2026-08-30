@@ -1,0 +1,29 @@
+$kind: http-request
+method: POST
+url: '{{base_url}}/api/v1/smart-map/observations'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "well": {"display_name": "DEMO-101", "field": "Synthetic demo", "cluster": "Demo cluster"},
+      "occurred_at": "2026-08-23T00:00:00Z",
+      "latitude": 52.4,
+      "longitude": 30.7,
+      "severities": {"wax": 0.72, "halite": 0.21, "calcite": 0.13, "corrosion": 0.44},
+      "integrated_risk": 0.61,
+      "well_role": "producer",
+      "source": "postman_demo",
+      "source_record_id": "demo-101-20260823",
+      "source_quality": "questionable",
+      "provenance": {"synthetic": true}
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Created or idempotently returned", () => pm.expect(pm.response.code).to.eql(201));
+      pm.test("Stable observation ID", () => pm.expect(pm.response.json().observation_id).to.match(/^risk:/));

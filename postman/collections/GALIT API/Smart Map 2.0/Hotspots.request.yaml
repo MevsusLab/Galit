@@ -1,0 +1,21 @@
+$kind: http-request
+method: GET
+url: '{{base_url}}/api/v1/smart-map/hotspots?days=30&min_wells=3&distance_km=3&mechanism=integrated'
+order: 3000
+queryParams:
+  - key: days
+    value: '30'
+  - key: min_wells
+    value: '3'
+  - key: distance_km
+    value: '3'
+  - key: mechanism
+    value: integrated
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Hotspots are screening", () => {
+        pm.response.to.have.status(200);
+        pm.expect(pm.response.json().disclaimer).to.include("screening");
+      });
