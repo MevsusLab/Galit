@@ -120,7 +120,8 @@ BACKGROUND_ASSET = ASSETS_DIR / "dashboard-background.png"
 HEADER_LOGO_ASSET = ASSETS_DIR / "header-logo.png"
 FONT_DIR = ASSETS_DIR / "fonts"
 ICON_DIR = ASSETS_DIR / "icons"
-FAVICON_ASSET = ICON_DIR / "brand-favicon.svg"
+BRAND_MARK_ASSET = ICON_DIR / "galit-mark.svg"
+FAVICON_ASSET = BRAND_MARK_ASSET
 FONT_FACES = (
     ("Outfit", "outfit-latin-ext-wght-normal.woff2", "U+0100-02FF, U+1E00-1EFF, U+2000-206F"),
     ("Outfit", "outfit-latin-wght-normal.woff2", "U+0000-00FF"),
@@ -749,6 +750,8 @@ def inject_css() -> None:
         .alert-card-title .ui-icon {{ width:15px; height:15px; margin-right:6px; }}
         .dashboard-header {{ display:flex; align-items:flex-end; justify-content:space-between;
             gap:18px; margin: 2px 0 18px; }}
+        .dashboard-brand {{ display:flex; align-items:center; gap:12px; }}
+        .dashboard-brand-mark {{ width:32px; height:40px; object-fit:contain; flex:0 0 auto; }}
         .dashboard-title {{ font-size: 28px; line-height:1.1; font-weight: {WEIGHT_SEMIBOLD};
             letter-spacing:-.55px; color:{GREEN_700}; }}
         .dashboard-subtitle {{ margin-top:6px; color:{INK_MUTED}; font-size:13px; }}
@@ -2047,9 +2050,11 @@ def render_header() -> None:
     st.html(
         f"""
         <div class="dashboard-header">
-            <div>
-                <div class="dashboard-title">ГАЛИТ</div>
-                <div class="dashboard-subtitle">Диагностика осложнений и приоритеты обслуживания</div>
+            <div class="dashboard-brand">
+                <div>
+                    <div class="dashboard-title">ГАЛИТ</div>
+                    <div class="dashboard-subtitle">Диагностика осложнений и приоритеты обслуживания</div>
+                </div>
             </div>
             <div class="dashboard-filters" aria-label="Контекст текущего расчёта">
                 <div class="filter-pill">{context_icon}Текущий расчёт {date_chevron}</div>

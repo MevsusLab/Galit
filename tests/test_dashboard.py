@@ -796,7 +796,39 @@ def test_icon_assets_are_vendored_with_license():
         assert "lucide-static" in markup  # апстрим-происхождение сохранено
 
     assert dashboard.FAVICON_ASSET.is_file()
-    assert "lucide" in dashboard.FAVICON_ASSET.read_text(encoding="utf-8")
+
+
+def test_galit_brand_assets_are_flat_vector_and_transparent_rasters():
+    import xml.etree.ElementTree as ET
+    from PIL import Image
+
+    svg = dashboard.BRAND_MARK_ASSET.read_text(encoding="utf-8")
+    root = ET.fromstring(svg)
+    assert root.attrib["viewBox"] == "0 0 88 128"
+    assert '#087A3D' in svg
+    forbidden = ("<image", "data:image", "<rect", "linearGradient", "radialGradient",
+                 "filter=", "mask=", "clipPath", "shadow")
+    assert not any(token in svg for token in forbidden)
+    assert len(root.findall("{http://www.w3.org/2000/svg}path")) == 1
+    assert dashboard.FAVICON_ASSET == dashboard.BRAND_MARK_ASSET
+
+    for size in (24, 32, 40, 48):
+        image = Image.open(dashboard.ICON_DIR / f"galit-mark-{size}.png")
+        assert image.mode == "RGBA" and image.size == (size, size)
+        assert image.getchannel("A").getextrema() == (0, 255)
+        opaque_colors = {
+            pixel[:3] for pixel in image.getdata() if pixel[3] == 255
+        }
+        assert opaque_colors
+        assert all(g > r * 5 and g > b * 1.8 for r, g, b in opaque_colors)
+
+    favicon = Image.open(dashboard.ICON_DIR / "galit-favicon.ico").convert("RGBA")
+    assert favicon.size == (48, 48)
+    assert favicon.getchannel("A").getextrema() == (0, 255)
+
+    source = Path("dashboard.py").read_text(encoding="utf-8")
+    assert "page_icon=FAVICON_ASSET" in source
+    assert 'class="dashboard-brand-mark"' in source
 
 
 def test_ui_renders_lucide_icons_instead_of_emoji_placeholders():
