@@ -271,7 +271,7 @@ def main() -> None:
     print("\nДАННЫЕ СИНТЕТИЧЕСКИЕ. Физика реальная, фонд смоделирован")
     print("по опубликованным характеристикам Припятского прогиба.")
 
-    demo_index_applicability()
+    demo_index_applicability
     demo_single_well()
     demo_fund_ranking()
     if "--competition" in sys.argv:
