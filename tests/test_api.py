@@ -1,8 +1,3 @@
-"""Контрактные тесты REST API: запрос-ответ, консистентность с ядром, ошибки.
-
-Полезная нагрузка взята из example_one_well.py (Речицкая 123), чтобы
-тест работал на реалистичных промысловых данных.
-"""
 from __future__ import annotations
 
 import copy
@@ -89,7 +84,6 @@ def _reference_case() -> WellCase:
 
 
 class TestDiagnoseEndpoint:
-
     def test_happy_path_contract(self):
         resp = client.post("/api/v1/diagnose", json=WELL)
         assert resp.status_code == 200
@@ -104,7 +98,6 @@ class TestDiagnoseEndpoint:
         assert isinstance(body["warnings"], list)
 
     def test_matches_core_direct_call(self):
-        """Слой отображения не искажает результат ядра."""
         reference = diagnose(_reference_case())
         body = client.post("/api/v1/diagnose", json=WELL).json()
         assert body["integrated_risk"] == pytest.approx(reference.integrated_risk)
@@ -184,7 +177,6 @@ class TestDiagnoseEndpoint:
 
 
 class TestIntegrationPrototypeContract:
-
     def test_metadata_and_profiles_are_opt_in(self):
         basic = client.post("/api/v1/diagnose", json=WELL).json()
         enriched = client.post("/api/v1/diagnose?include_metadata=true", json=WELL).json()
@@ -235,7 +227,6 @@ class TestIntegrationPrototypeContract:
 
 
 class TestMasterPlanEndpoint:
-
     def test_partial_contract_and_safety(self):
         bad = copy.deepcopy(WELL)
         del bad["geometry"]
@@ -263,7 +254,6 @@ class TestMasterPlanEndpoint:
 
 
 class TestHealthEndpoint:
-
     def test_health(self):
         resp = client.get("/api/v1/health")
         assert resp.status_code == 200
@@ -271,7 +261,6 @@ class TestHealthEndpoint:
 
 
 class TestForecastEndpoint:
-
     @staticmethod
     def payload() -> dict:
         return {"well": copy.deepcopy(WELL), "as_of": "2026-08-23T12:00:00+00:00"}
@@ -311,8 +300,6 @@ class TestForecastEndpoint:
 
 
 def test_hybrid_wellbore_api():
-    """Тест эндпоинта гибридного цифрового двойника ствола (Physics + ML Residual)."""
-    # 1. Запрос с автогенерацией промысловых измерений
     req = {
         "well": WELL,
         "generate_demo_measurements": True,
@@ -327,7 +314,6 @@ def test_hybrid_wellbore_api():
     assert "wax_onset_hybrid_m" in data
     assert data["temp_residual_max_c"] > 0
 
-    # 2. Запрос с явно заданными замерами
     req_custom = {
         "well": WELL,
         "measurements": [

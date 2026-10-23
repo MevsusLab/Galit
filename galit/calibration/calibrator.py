@@ -1,4 +1,3 @@
-"""Bounded physical and risk-policy calibration using train records only."""
 from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -9,6 +8,7 @@ from .artifact import MODEL_VERSION, ParameterSet, validation_status_for
 from .loader import snapshot_to_well_case
 from .metrics import regression_metrics, classification_metrics
 from .schema import WellSnapshot
+
 
 def _bounded_search(objective:Callable[[float],float], bounds:tuple[float,float], *, method:str="grid", seed:int=0, iterations:int=81)->tuple[float,float]:
     lo,hi=bounds
@@ -21,12 +21,14 @@ def _bounded_search(objective:Callable[[float],float], bounds:tuple[float,float]
     if not scored: raise ValueError("objective produced no finite values")
     return min(scored)[1],min(scored)[0]
 
+
 def _temperature_prediction(snapshot:WellSnapshot,u_to:float)->float:
     from galit.wellbore import temperature_profile
     case=snapshot_to_well_case(snapshot); case.thermal=replace(case.thermal,u_to=u_to)
     depths,temps,_=temperature_profile(case.geometry,case.rate,case.fluid,case.thermal)
     target_depth=float(snapshot.values.get("measurement_depth_m",0) or 0)
     return min(zip(depths,temps),key=lambda x:abs(x[0]-target_depth))[1]
+
 
 def calibrate_physical(train:list[WellSnapshot], test:list[WellSnapshot], dataset_hash:str,
                        *, parameter:str="thermal.u_to", bounds:tuple[float,float]=(2,80),
@@ -54,8 +56,8 @@ def calibrate_physical(train:list[WellSnapshot], test:list[WellSnapshot], datase
       limitations=("Only thermal.u_to is calibrated; halite, calcite, WAT and corrosion are unchanged.",),
       validation_status=status)
 
+
 def calibrate_risk_policy(train:list[WellSnapshot],test:list[WellSnapshot],dataset_hash:str,*,seed:int=0,synthetic:bool=False)->ParameterSet:
-    """Fit non-negative simplex risk weights to labels/rankings; never physical parameters."""
     from galit.integrated import diagnose
     mechanisms=("halite","calcite","wax","corrosion")
     usable=[s for s in train if s.values.get("risk_label") not in (None,"")]

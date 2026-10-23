@@ -1,20 +1,3 @@
-"""Расчёт экономического эффекта с явными допущениями.
-
-Принцип: НИ ОДНО число не зашивается молча. Каждый параметр имеет
-источник ("промысловый факт", "оценка", "требует уточнения у заказчика")
-и участвует в анализе чувствительности.
-
-Причина такой строгости: внутренний фильтр Белоруснефти -- Совет
-по цифровизации -- отбирает проекты по ожидаемому экономическому
-эффекту. Один красивый ROI без допущений там не пройдёт, а таблица
-чувствительности по двум неизвестным пройдёт.
-
-Опорный промысловый факт для калибровки правдоподобия: НГДУ
-"Речицанефть" за 10 лет сократило объём обработок теплоносителем
-в 3,5 раза за счёт оптимизации, новых технологий и нефтехимии.
-То есть заказчик уже умеет считать эффект именно в этой метрике
-и относится к ней серьёзно.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -23,12 +6,11 @@ import math
 
 @dataclass(frozen=True)
 class Assumption:
-    """Параметр расчёта с прослеживаемым источником."""
     name: str
     value: float
     unit: str
     source: str
-    confidence: str        # "факт" | "оценка" | "уточнить"
+    confidence: str
     low: float | None = None
     high: float | None = None
 
@@ -39,17 +21,7 @@ class Assumption:
         return lo, hi
 
 
-# --------------------------------------------------------------------------
-# Базовый набор допущений
-# --------------------------------------------------------------------------
-
 def default_assumptions() -> dict[str, Assumption]:
-    """Допущения по умолчанию для НГДУ «Речицанефть».
-
-    Значения, помеченные "уточнить", -- это ровно тот список вопросов,
-    который нужно задать заказчику письмом. Сам факт, что мы знаем,
-    ЧТО спрашивать, работает на нас.
-    """
     return {
         "n_wells_mech": Assumption(
             "Механизированный фонд", 601, "скв.",
@@ -107,7 +79,7 @@ def default_assumptions() -> dict[str, Assumption]:
             "Текущее значение -- обязательный вопрос заказчику",
             "уточнить", 250.0, 600.0,
         ),
-        # --- эффекты от внедрения ---
+
         "treatment_reduction": Assumption(
             "Сокращение числа обработок", 0.25, "-",
             "Консервативная цель: адресность вместо графика. "
@@ -130,13 +102,8 @@ def default_assumptions() -> dict[str, Assumption]:
     }
 
 
-# --------------------------------------------------------------------------
-# Расчёт
-# --------------------------------------------------------------------------
-
 @dataclass
 class EconomicResult:
-    """Результат расчёта с разложением по источникам эффекта."""
     saving_treatments: float = 0.0
     saving_failures: float = 0.0
     saving_production: float = 0.0
@@ -146,19 +113,11 @@ class EconomicResult:
 
 
 def compute_effect(a: dict[str, Assumption]) -> EconomicResult:
-    """Годовой экономический эффект, BYN/год.
-
-    Три независимых канала:
-      1) сокращение числа обработок (реагент + бригада + простой);
-      2) снижение числа отказов (ТКРС + простой);
-      3) восстановление дебита, потерянного из-за отложений.
-    """
     v = {k: x.value for k, x in a.items()}
 
     n_compl = v["n_wells_mech"] * v["n_complicated"]
     hourly_loss = v["well_rate_t_day"] / 24.0 * v["oil_price"]
 
-    # --- 1. обработки ---
     treatments = n_compl * v["treatments_per_well_year"]
     cost_one = (
         v["cost_reagent"]
@@ -167,7 +126,6 @@ def compute_effect(a: dict[str, Assumption]) -> EconomicResult:
     )
     saving_tr = treatments * v["treatment_reduction"] * cost_one
 
-    # --- 2. отказы ---
     failures = v["n_wells_mech"] * 365.0 / max(v["mtbf_days"], 1.0)
     cost_fail = (
         v["cost_tkrs"]
@@ -175,7 +133,6 @@ def compute_effect(a: dict[str, Assumption]) -> EconomicResult:
     )
     saving_fail = failures * v["failure_reduction"] * cost_fail
 
-    # --- 3. дебит ---
     annual_oil_compl = n_compl * v["well_rate_t_day"] * 365.0
     saving_prod = annual_oil_compl * v["rate_loss_recovered"] * v["oil_price"]
 
@@ -205,10 +162,6 @@ def compute_effect(a: dict[str, Assumption]) -> EconomicResult:
 
 def sensitivity(a: dict[str, Assumption], keys: list[str],
                 n_steps: int = 5) -> dict[str, list[tuple[float, float]]]:
-    """Одномерная чувствительность по каждому параметру из keys.
-
-    Возвращает {параметр: [(значение, эффект), ...]}.
-    """
     out: dict[str, list[tuple[float, float]]] = {}
     for key in keys:
         lo, hi = a[key].range
@@ -223,11 +176,6 @@ def sensitivity(a: dict[str, Assumption], keys: list[str],
 
 
 def tornado(a: dict[str, Assumption]) -> list[tuple[str, float, float, float]]:
-    """Ранжирование параметров по влиянию на итог (tornado-диаграмма).
-
-    Возвращает [(имя, эффект_при_low, эффект_при_high, размах), ...]
-    отсортированный по убыванию размаха.
-    """
     base = compute_effect(a).total
     rows = []
     for key, asm in a.items():
@@ -244,12 +192,6 @@ def tornado(a: dict[str, Assumption]) -> list[tuple[str, float, float, float]]:
 
 
 def scenario_bounds(a: dict[str, Assumption]) -> dict[str, float]:
-    """Консервативный / базовый / оптимистичный сценарии.
-
-    Консервативный: все ЭФФЕКТЫ по нижней границе (не все параметры --
-    иначе получится бессмысленная комбинация худшего фонда с худшими
-    эффектами).
-    """
     effect_keys = ["treatment_reduction", "failure_reduction",
                    "rate_loss_recovered"]
     cons = dict(a)
@@ -265,28 +207,14 @@ def scenario_bounds(a: dict[str, Assumption]) -> dict[str, float]:
 
 
 def unknowns(a: dict[str, Assumption]) -> list[Assumption]:
-    """Параметры, требующие уточнения у заказчика.
-
-    Этот список -- готовый текст запроса. Отсортирован по влиянию
-    на результат, чтобы спрашивать в первую очередь важное.
-    """
     ranked = {name: span for name, _, _, span in tornado(a)}
     todo = [x for x in a.values() if x.confidence == "уточнить"]
     todo.sort(key=lambda x: ranked.get(x.name, 0.0), reverse=True)
     return todo
 
 
-# --------------------------------------------------------------------------
-# Unit economics пилота: только пользовательские/заказчиковые ставки
-# --------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class PilotUnitEconomicsInput:
-    """Явные входы окупаемости пилота в одной валюте.
-
-    Нулевые unit values допустимы и означают, что соответствующий канал
-    не может сам окупить пилот. Отрицательные и non-finite значения запрещены.
-    """
     pilot_cost: Assumption
     treatment_value: Assumption
     failure_value: Assumption
@@ -339,12 +267,6 @@ def compute_pilot_break_even(
     inputs: PilotUnitEconomicsInput,
     mix: PilotOutcomeMix = PilotOutcomeMix(),
 ) -> PilotBreakEvenResult:
-    """Посчитать отдельные и смешанный break-even без скрытых ставок.
-
-    ``mixed_break_even_share`` — множитель к переданному mix: 1 означает
-    ровно окупаемость, <1 — заданный mix уже окупает пилот. Если mix имеет
-    нулевую ценность, вернуть ``None`` вместо бесконечности.
-    """
     pilot_cost = _checked_nonnegative("pilot_cost", inputs.pilot_cost.value)
     treatment = _checked_nonnegative("treatment_value", inputs.treatment_value.value)
     failure = _checked_nonnegative("failure_value", inputs.failure_value.value)
@@ -387,7 +309,6 @@ def pilot_sensitivity(
     inputs: PilotUnitEconomicsInput,
     mix: PilotOutcomeMix,
 ) -> list[tuple[str, float | None, float | None]]:
-    """Compact sensitivity: low/high break-even share for top unit values."""
     rows: list[tuple[str, float | None, float | None]] = []
     for field_name in (
         "treatment_value", "failure_value", "downtime_day_value", "saved_tonne_value",

@@ -1,4 +1,3 @@
-"""Tests for the machine-readable release evidence generator."""
 from pathlib import Path
 
 import release_manifest

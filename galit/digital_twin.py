@@ -1,9 +1,3 @@
-"""Unified, explainable digital-twin timeline assembled from GALIT repositories.
-
-The module is deliberately an aggregation/service layer: source repositories remain
-authoritative. Only genuinely manual repair/failure/laboratory records are persisted
-in the dedicated event store.
-"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field as dc_field
@@ -59,7 +53,6 @@ def aware(value: datetime | str, name: str = "timestamp") -> datetime:
 
 
 def normalize_well_name(value: str) -> str:
-    """Strict display-name normalization; context is never discarded."""
     text = " ".join(str(value).strip().split()).casefold().replace("ё", "е")
     text = re.sub(r"\s*[-–—]\s*", "-", text)
     if not text:
@@ -178,7 +171,6 @@ class DigitalTwinEvent:
         data["links"] = tuple(data.get("links", ()))
         return cls(**data)
 
-
 TimelineEvent = DigitalTwinEvent
 
 
@@ -199,7 +191,6 @@ def _event(identity: WellIdentity, occurred_at: datetime, category: EventCategor
 
 
 class ManualEventRepository:
-    """Versioned UTF-8 JSON store with file locking, atomic replace and idempotency."""
     _locks: dict[str, threading.RLock] = {}; _guard = threading.Lock()
     def __init__(self, path: str | Path | None = None, lock_timeout: float = 5):
         self.path = Path(path or os.environ.get("GALIT_TWIN_EVENT_STORAGE", "data/digital_twin_events.json"))
@@ -400,12 +391,8 @@ class DigitalTwinService:
                 for item in adapter.identities():
                     by_id[item.canonical_id] = item
             except Exception:
-                # One unavailable/corrupt optional source must not make the
-                # aggregate twin unusable when other repositories are healthy.
                 continue
-        # Context-free source aliases (equipment/passport) may safely attach only
-        # when exactly one contextual identity exists. With two fields they stay
-        # visible and resolution remains explicitly ambiguous.
+
         grouped: dict[str, list[WellIdentity]] = {}
         for item in by_id.values(): grouped.setdefault(item.normalized_name, []).append(item)
         result: list[WellIdentity] = []

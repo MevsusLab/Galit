@@ -1,8 +1,3 @@
-"""Единая подготовка данных для карты фонда без привязки к UI.
-
-Координаты необязательны. Некорректные точки и оценки потерь не мешают
-показу остальных скважин и явно учитываются в сводке.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -58,7 +53,6 @@ class FieldMapData:
 
 
 def map_status(risk: object) -> str:
-    """Translate integrated risk into the shared traffic-light map status."""
     value = _finite(risk)
     if value is None:
         return "green"
@@ -83,14 +77,12 @@ def valid_coordinates(latitude: object, longitude: object) -> bool:
 
 
 def _marker_size(loss: float | None, max_loss: float) -> float:
-    """Bounded area-like scaling: missing/zero loss remains visible."""
     if loss is None or loss <= 0 or max_loss <= 0:
         return 12.0
     return round(12.0 + 24.0 * math.sqrt(loss / max_loss), 2)
 
 
 def prepare_field_map(items: Iterable[DiagnosedWell]) -> FieldMapData:
-    """Create safe map points and an audit-friendly aggregate summary."""
     rows = list(items)
     plan = generate_master_plan(rows, include_low_risk=True)
     losses = {task.well.casefold(): _finite(task.possible_oil_loss.central_m3d)
@@ -135,7 +127,6 @@ def prepare_field_map(items: Iterable[DiagnosedWell]) -> FieldMapData:
             counts_by_status=counts, possible_oil_loss_m3d=total_loss,
         ),
     )
-
 
 __all__ = [
     "FieldMapData", "FieldMapPoint", "FieldMapSummary", "STATUS_COLORS",

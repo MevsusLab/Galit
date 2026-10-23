@@ -1,14 +1,3 @@
-"""Локальный ML-детектор предаварийных аномалий телеметрии ЭЦН/ШГН.
-
-Использует Isolation Forest (scikit-learn) для unsupervised обнаружения
-аномалий в многомерном потоке телеметрии. Обучается на лету на истории
-нормальной работы конкретной скважины — разметка аварий не нужна.
-
-Ключевая идея: ML ловит ФАКТ зарождения аномалии по датчикам,
-а физическое ядро ГАЛИТа объясняет её ПРИЧИНУ и глубину.
-
-Всё работает локально, без внешних API и облаков.
-"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -16,8 +5,6 @@ from datetime import datetime, timezone
 import math
 from typing import Any, Sequence
 
-# Lazy import sklearn — модуль не падает если библиотеки нет,
-# а возвращает graceful degradation с предупреждением.
 _SKLEARN_AVAILABLE = False
 try:
     from sklearn.ensemble import IsolationForest
@@ -35,8 +22,6 @@ DISCLAIMER = (
     "интерпретация совместно с физическими моделями ГАЛИТа."
 )
 
-# Каналы телеметрии, по которым ведётся детекция.
-# Порядок важен: индекс в массиве соответствует feature importance.
 ESP_FEATURES = (
     "current_a",
     "intake_pressure",
@@ -53,28 +38,22 @@ ROD_PUMP_FEATURES = (
     "strokes_per_min",
 )
 
-# Минимум наблюдений для обучения Isolation Forest.
-# Меньше — модель не обучается, возвращается insufficient_data.
 MIN_TRAINING_SAMPLES = 5
 
-# Доля «нормальных» наблюдений в обучающей выборке.
-# contamination=0.05 означает: ~5% точек в обучении считаются аномальными.
 DEFAULT_CONTAMINATION = 0.05
 
-# Пороги перевода raw anomaly score в категорию
 SCORE_WARN_THRESHOLD = 0.50
 SCORE_CRITICAL_THRESHOLD = 0.70
 
 
 @dataclass(frozen=True)
 class AnomalyPoint:
-    """Результат ML-детекции для одного телеметрического snapshot."""
     timestamp: datetime
-    anomaly_score: float          # 0..1, где 1 = максимальная аномальность
-    is_anomaly: bool              # True если модель считает точку аномальной
-    level: str                    # "normal" | "warning" | "critical"
-    feature_contributions: dict[str, float]  # вклад каждого канала в аномалию
-    raw_score: float              # сырой score из Isolation Forest (чем < -0.5, тем нормальнее)
+    anomaly_score: float
+    is_anomaly: bool
+    level: str
+    feature_contributions: dict[str, float]
+    raw_score: float
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -84,17 +63,16 @@ class AnomalyPoint:
 
 @dataclass(frozen=True)
 class AnomalyReport:
-    """Сводный отчёт ML-аномалий по скважине."""
     well: str
-    status: str                   # "ok" | "warning" | "critical" | "insufficient_data" | "unavailable"
+    status: str
     total_points: int
     anomaly_count: int
-    anomaly_rate: float           # доля аномальных точек
+    anomaly_rate: float
     max_anomaly_score: float
     latest_anomaly_score: float | None
-    trending_up: bool             # True если последние 3+ точки ухудшаются
+    trending_up: bool
     points: tuple[AnomalyPoint, ...]
-    dominant_anomaly_feature: str | None  # канал с максимальным вкладом в последнюю аномалию
+    dominant_anomaly_feature: str | None
     training_samples: int
     model_version: str = MODEL_VERSION
     disclaimer: str = DISCLAIMER
@@ -106,11 +84,6 @@ class AnomalyReport:
 
 
 def _extract_feature_matrix(snapshots: Sequence, features: tuple[str, ...]) -> tuple[list[list[float]], list[datetime], list[list[bool]]]:
-    """Извлекает матрицу признаков из списка TelemetrySnapshot.
-
-    Returns:
-        (matrix, timestamps, mask) где mask[i][j] = True если значение было реальным (не заполненным).
-    """
     matrix: list[list[float]] = []
     timestamps: list[datetime] = []
     masks: list[list[bool]] = []
@@ -124,7 +97,7 @@ def _extract_feature_matrix(snapshots: Sequence, features: tuple[str, ...]) -> t
                 row.append(float(value))
                 mask.append(True)
             else:
-                row.append(0.0)  # placeholder, будет заменён медианой
+                row.append(0.0)
                 mask.append(False)
         matrix.append(row)
         timestamps.append(snap.timestamp)
@@ -134,7 +107,6 @@ def _extract_feature_matrix(snapshots: Sequence, features: tuple[str, ...]) -> t
 
 
 def _impute_median(matrix: list[list[float]], masks: list[list[bool]]) -> list[list[float]]:
-    """Замена пропущенных значений медианой столбца."""
     if not matrix:
         return matrix
     n_features = len(matrix[0])
@@ -157,10 +129,6 @@ def _compute_feature_contributions(
     baseline_std: list[float],
     features: tuple[str, ...],
 ) -> dict[str, float]:
-    """Вычисляет вклад каждого канала в аномалию как нормированное отклонение от базовой линии.
-
-    Чем больше Z-score, тем больше канал «виноват» в аномалии.
-    """
     contributions: dict[str, float] = {}
     total = 0.0
     raw_scores: list[float] = []
@@ -178,18 +146,6 @@ def _compute_feature_contributions(
 
 
 def _normalize_anomaly_score(raw_score: float) -> float:
-    """Преобразует raw score из IsolationForest (-1..0..+1) в шкалу 0..1.
-
-    IsolationForest.decision_function возвращает:
-      < 0 — аномалия (чем меньше, тем аномальнее)
-      > 0 — нормально
-    score_samples возвращает отрицательные значения, аномалии ближе к 0.
-
-    Мы используем decision_function и нормализуем:
-    score = 0.5 - decision_function_value  (clamped to 0..1)
-    """
-    # decision_function: положительные = нормальные, отрицательные = аномалии
-    # Типичный диапазон: -0.3 .. +0.3
     normalized = 0.5 - raw_score
     return min(max(normalized, 0.0), 1.0)
 
@@ -203,7 +159,6 @@ def _score_to_level(score: float) -> str:
 
 
 def _is_trending_up(scores: list[float], window: int = 3) -> bool:
-    """Проверяет, растут ли последние `window` anomaly scores."""
     if len(scores) < window:
         return False
     tail = scores[-window:]
@@ -217,17 +172,6 @@ def detect_anomalies(
     contamination: float = DEFAULT_CONTAMINATION,
     random_state: int = 42,
 ) -> AnomalyReport:
-    """Запускает Isolation Forest на истории телеметрии одной скважины.
-
-    Args:
-        snapshots: Отсортированные по времени TelemetrySnapshot одной скважины.
-        lift_type: "ESP" или "ROD_PUMP".
-        contamination: Ожидаемая доля аномалий в обучающей выборке (0..0.5).
-        random_state: Seed для воспроизводимости.
-
-    Returns:
-        AnomalyReport с anomaly score для каждой точки и сводкой.
-    """
     well = snapshots[0].well if snapshots else "unknown"
 
     if not _SKLEARN_AVAILABLE:
@@ -238,7 +182,6 @@ def detect_anomalies(
             dominant_anomaly_feature=None, training_samples=0,
         )
 
-    # Выбираем каналы по типу оборудования
     key = lift_type.strip().upper()
     if key in ("ESP", "ЭЦН"):
         features = ESP_FEATURES
@@ -261,35 +204,29 @@ def detect_anomalies(
             dominant_anomaly_feature=None, training_samples=len(snapshots),
         )
 
-    # Извлекаем матрицу признаков
     matrix, timestamps, masks = _extract_feature_matrix(snapshots, features)
     matrix = _impute_median(matrix, masks)
 
     X = np.array(matrix, dtype=np.float64)
 
-    # Стандартизация (Z-score нормализация)
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    # Обучаем Isolation Forest
     n_estimators = min(100, max(10, len(X) * 2))
     model = IsolationForest(
         n_estimators=n_estimators,
         contamination=contamination,
         random_state=random_state,
-        n_jobs=1,  # локально, без параллелизма для стабильности
+        n_jobs=1,
     )
     model.fit(X_scaled)
 
-    # Получаем предсказания
-    predictions = model.predict(X_scaled)       # +1 = normal, -1 = anomaly
-    raw_scores = model.decision_function(X_scaled)  # чем < 0, тем аномальнее
+    predictions = model.predict(X_scaled)
+    raw_scores = model.decision_function(X_scaled)
 
-    # Базовые статистики для вычисления feature contributions
     baseline_mean = X.mean(axis=0).tolist()
     baseline_std = X.std(axis=0).tolist()
 
-    # Строим результат по каждой точке
     anomaly_points: list[AnomalyPoint] = []
     anomaly_scores_list: list[float] = []
 
@@ -318,7 +255,6 @@ def detect_anomalies(
     latest_score = anomaly_scores_list[-1] if anomaly_scores_list else None
     trending = _is_trending_up(anomaly_scores_list)
 
-    # Определяем общий статус
     if any(p.level == "critical" for p in anomaly_points[-3:]):
         status = "critical"
     elif any(p.level == "warning" or p.is_anomaly for p in anomaly_points[-3:]):
@@ -326,7 +262,6 @@ def detect_anomalies(
     else:
         status = "ok"
 
-    # Доминирующий канал в последней аномальной точке
     dominant = None
     anomalous_points = [p for p in anomaly_points if p.is_anomaly]
     if anomalous_points:
@@ -347,10 +282,6 @@ def detect_anomalies(
         training_samples=len(X),
     )
 
-
-# --------------------------------------------------------------------------- #
-# Human-readable labels for features (для UI)
-# --------------------------------------------------------------------------- #
 FEATURE_LABELS: dict[str, str] = {
     "current_a": "Ток, А",
     "intake_pressure": "Давление приёма",

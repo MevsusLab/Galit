@@ -1,4 +1,3 @@
-"""Generate reproducible GALIT release evidence in JSON and Markdown."""
 from __future__ import annotations
 
 import argparse
@@ -245,7 +244,6 @@ def main() -> int:
     print(f"Wrote {json_path.relative_to(root)} and {md_path.relative_to(root)}")
     print(tests["summary"])
     return 0 if tests["result"] in {"passed", "not_run"} else 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

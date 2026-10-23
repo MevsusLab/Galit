@@ -1,7 +1,3 @@
-"""Conservative audit for tabular data proposed for GALIT calibration.
-
-This module audits source data without inventing mappings or filling missing values.
-"""
 from __future__ import annotations
 
 import csv
@@ -39,7 +35,6 @@ def _quartiles(values: list[float]) -> tuple[float, float]:
 
 
 def audit_csv(path: str | Path, *, today: date | None = None) -> dict[str, Any]:
-    """Return a factual audit; never infer semantic mappings from similar names."""
     source = Path(path)
     raw = source.read_bytes()
     with source.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -123,7 +118,6 @@ def audit_csv(path: str | Path, *, today: date | None = None) -> dict[str, Any]:
 
 
 def write_markdown(audit: dict[str, Any], output: str | Path) -> Path:
-    """Write a compact, reviewable compatibility report."""
     n = audit["numeric"]
     lines = [
         "# Supplied GALIT calibration data audit", "",

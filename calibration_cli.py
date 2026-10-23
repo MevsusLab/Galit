@@ -5,6 +5,7 @@ from galit.calibration import (ParameterSet, audit_csv, blocked_parameter_set,
  calibrate_physical, calibrate_risk_policy, evaluate_parameter_set, generate_template,
  load_history, split_by_well, temporal_group_holdout, write_audit_markdown, write_report)
 
+
 def main(argv=None)->int:
  p=argparse.ArgumentParser(prog="calibration_cli.py"); sub=p.add_subparsers(dest="command",required=True)
  g=sub.add_parser("generate-template");g.add_argument("output");g.add_argument("--example",action="store_true")

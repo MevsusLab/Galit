@@ -1,4 +1,3 @@
-"""Контрактные тесты политики риска и сценарной неопределённости."""
 from __future__ import annotations
 
 import copy

@@ -1,9 +1,3 @@
-"""Versioned engineering screening for compatibility of two measured waters.
-
-The module deliberately does not invent missing chemistry.  It linearly mixes
-reported ion concentrations and screens mineral saturation; it is not an
-aqueous speciation, precipitation-path, kinetic, or transport simulator.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,7 +13,7 @@ MAX_PROFILE_POINTS = 2000
 SUPPORTED_MINERALS = ("calcite", "barite", "gypsum", "halite")
 _CHARGES = {"Na": 1, "K": 1, "Ca": 2, "Mg": 2, "Ba": 2, "Sr": 2,
             "Fe": 2, "Cl": -1, "SO4": -2, "HCO3": -1, "CO3": -2}
-# Thermodynamic Ksp at 25 C. Used only for explicitly labelled screening.
+
 _KSP_25C = {"barite": 1.08e-10, "gypsum": 2.4e-5}
 _REQUIRED = {
     "calcite": ("Ca", "HCO3_or_CO3"),
@@ -38,7 +32,6 @@ def _finite(value: float, name: str) -> float:
 
 @dataclass(frozen=True)
 class CompatibilityWater:
-    """A supplied water analysis; ions are mg/L, temperature C, pressure Pa."""
     ions_mg_l: Mapping[str, float]
     ph: float
     t_c: float
@@ -195,12 +188,10 @@ def default_mix_fractions(step: float = 0.01) -> tuple[float, ...]:
 def mix_waters(water_a: CompatibilityWater, water_b: CompatibilityWater,
                fraction_b: float, *, t_c: float | None = None,
                p_pa: float | None = None) -> CompatibilityWater:
-    """Conservative-volume linear mixing with hydrogen-activity pH mixing."""
     f = _finite(fraction_b, "fraction_b")
     if not 0 <= f <= 1:
         raise ValueError("fraction_b must be within [0, 1]")
-    # A missing analysis is unknown, not a measured zero. At an endpoint only
-    # the selected water contributes; an interior mixture needs both values.
+
     if f == 0:
         ions = dict(water_a.ions_mg_l)
     elif f == 1:

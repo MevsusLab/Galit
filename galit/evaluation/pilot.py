@@ -1,9 +1,3 @@
-"""Baseline comparison for a leakage-safe, shadow-mode GALIT pilot.
-
-The module never manufactures target evidence. Field evaluation requires an
-explicit event outcome for every evaluated row. Synthetic scenarios can only
-be reported as illustrative and not field validated.
-"""
 from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
@@ -51,13 +45,6 @@ def compare_strategies(
     illustrative: bool = False,
     split_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compare three frozen strategies against explicitly supplied outcomes.
-
-    ``assumptions`` is optional. Business value is reported only when the
-    caller explicitly supplies ``event_prevention_fraction`` and any required
-    unit values. Ranking metrics are observational; prevented loss is a
-    scenario calculation, not a causal estimate.
-    """
     labels = list(PILOT_LABELS) if illustrative else ["field outcomes supplied"]
     base: dict[str, Any] = {
         "status": "blocked", "labels": labels, "n": len(rows),
@@ -122,7 +109,6 @@ def compare_strategies(
 
 
 def _tie_selection_weights(scores: Sequence[float | None], k: int) -> list[float]:
-    """Expected selection weights when the K boundary cuts a score tie."""
     if not scores:
         return []
     kk = min(max(int(k), 0), len(scores))
@@ -145,7 +131,6 @@ def _tie_selection_weights(scores: Sequence[float | None], k: int) -> list[float
 
 def evaluate_uploaded_rows(rows: Sequence[Mapping[str, Any]], *, k: int = 5,
                            assumptions: Mapping[str, float] | None = None) -> dict[str, Any]:
-    """Field-upload entry point. It is blocked unless real targets are present."""
     return compare_strategies(rows, k=k, assumptions=assumptions, illustrative=False)
 
 

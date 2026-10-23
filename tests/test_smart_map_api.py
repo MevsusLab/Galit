@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 import api, galit
 
+
 def test_smart_map_api_happy_filters_geojson_and_errors(tmp_path,monkeypatch):
     repo=galit.SmartMapRepository(tmp_path/"map.json"); monkeypatch.setattr(api,"SMART_MAP",repo)
     client=TestClient(api.app)

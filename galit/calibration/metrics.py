@@ -1,7 +1,7 @@
-"""Metrics that never invent unavailable targets."""
 from __future__ import annotations
 import math
 from typing import Any
+
 
 def _available(name: str, values: list[tuple[float|None,float|None]]) -> dict[str,Any]:
     pairs=[(float(y),float(p)) for y,p in values if y is not None and p is not None]
@@ -11,8 +11,10 @@ def _available(name: str, values: list[tuple[float|None,float|None]]) -> dict[st
             "mae":sum(abs(e) for e in errors)/len(errors),
             "rmse":math.sqrt(sum(e*e for e in errors)/len(errors))}
 
+
 def regression_metrics(name:str, targets:list[float|None], predictions:list[float|None])->dict[str,Any]:
     return _available(name,list(zip(targets,predictions)))
+
 
 def classification_metrics(name:str, labels:list[float|None], probabilities:list[float|None])->dict[str,Any]:
     pairs=[(float(y),float(p)) for y,p in zip(labels,probabilities) if y is not None and p is not None]
@@ -21,13 +23,8 @@ def classification_metrics(name:str, labels:list[float|None], probabilities:list
             "brier":sum((p-y)**2 for y,p in pairs)/len(pairs),
             "accuracy":sum((p>=.5)==(y>=.5) for y,p in pairs)/len(pairs)}
 
-def ranking_metrics(labels:list[float|None], scores:list[float|None],k:int=5)->dict[str,Any]:
-    """Tie-safe binary ranking metrics.
 
-    Missing labels block the complete evaluation rather than silently changing
-    the cohort. If K cuts a score tie, metrics are expected values across all
-    orderings within that tied group, so input row order cannot change results.
-    """
+def ranking_metrics(labels:list[float|None], scores:list[float|None],k:int=5)->dict[str,Any]:
     if k <= 0:
         raise ValueError("k must be positive")
     if len(labels) != len(scores):
@@ -63,6 +60,7 @@ def ranking_metrics(labels:list[float|None], scores:list[float|None],k:int=5)->d
         "empty_positives":positives == 0,
         "tie_policy":"expected value across tied boundary",
     }
+
 
 def coverage(rows:list[dict[str,Any]], targets:list[str])->dict[str,Any]:
     n=len(rows); return {t:{"available":sum(r.get(t) not in (None,"") for r in rows),

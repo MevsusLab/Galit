@@ -1,4 +1,3 @@
-"""Honest baseline comparison and measurable shadow-pilot API."""
 from .pilot import (
     PILOT_COLUMNS,
     PILOT_LABELS,

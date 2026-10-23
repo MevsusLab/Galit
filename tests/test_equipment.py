@@ -5,9 +5,11 @@ import galit
 
 NOW = datetime(2026, 8, 23, 12, tzinfo=timezone.utc)
 
+
 def meta(lift="ESP"):
     return galit.EquipmentMetadata(well="W-1", lift_type=lift, runtime_days=100,
         nominal_current_a=100, temperature_limit_c=100, vibration_limit_mm_s=10, load_limit_kn=50)
+
 
 def esp(**kw):
     values=dict(well="W-1", timestamp=NOW, lift_type="ESP", current_a=100,
@@ -17,6 +19,7 @@ def esp(**kw):
         vibration_mm_s=2, vibration_limit_mm_s=10)
     values.update(kw); return galit.TelemetrySnapshot(**values)
 
+
 def test_esp_normal_warn_critical_and_monotonic_rul():
     normal=galit.forecast_equipment(meta(), [esp()], as_of=NOW)
     warn=galit.forecast_equipment(meta(), [esp(current_a=135, vibration_mm_s=8.8)], as_of=NOW)
@@ -24,6 +27,7 @@ def test_esp_normal_warn_critical_and_monotonic_rul():
     assert normal.baseline_failure_risk <= warn.baseline_failure_risk <= critical.baseline_failure_risk
     assert normal.rul_days[1] >= warn.rul_days[1] >= critical.rul_days[1]
     assert critical.urgency == "immediate_engineering_review"
+
 
 def test_rod_pump_signals_and_unsupported():
     rod=galit.TelemetrySnapshot(well="W-1", timestamp=NOW, lift_type="ШГН", rod_load_kn=55,
@@ -34,6 +38,7 @@ def test_rod_pump_signals_and_unsupported():
     assert {"rod_load", "fillage", "dynamic_level"} <= {x.code for x in result.causes}
     unsupported=galit.forecast_equipment(galit.EquipmentMetadata("F", "фонтан", runtime_days=1), [], as_of=NOW)
     assert unsupported.status == "not_applicable" and unsupported.baseline_failure_risk is None
+
 
 def test_complications_sand_missing_deterministic_and_validation():
     base=galit.forecast_equipment(meta(), [esp()], as_of=NOW)
@@ -46,6 +51,7 @@ def test_complications_sand_missing_deterministic_and_validation():
     assert partial.confidence == "low" and partial.missing_fields
     with pytest.raises(ValueError): galit.TelemetrySnapshot("W", NOW.replace(tzinfo=None), "ESP")
     with pytest.raises(ValueError): galit.TelemetrySnapshot("W", NOW, "ESP", intake_pressure=10, discharge_pressure=5)
+
 
 def test_history_trend_repository_idempotency_conflict_and_csv(tmp_path):
     history=[esp(timestamp=NOW-timedelta(days=2), current_a=80), esp(timestamp=NOW-timedelta(days=1), current_a=90), esp(current_a=110)]

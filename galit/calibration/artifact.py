@@ -1,4 +1,3 @@
-"""Strict, versioned GALIT calibration artifact and runtime adapter."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -20,12 +19,11 @@ MECHANISMS = ("halite", "calcite", "wax", "corrosion")
 
 
 class ArtifactValidationError(ValueError):
-    """Artifact is malformed, unsafe, or incompatible with this runtime."""
+    pass
 
 
 @dataclass(frozen=True)
 class ParameterSet:
-    # First fields preserve the legacy Python constructor; persisted v1 JSON is rejected.
     kind: str
     parameters: Mapping[str, float]
     model_version: str
@@ -137,7 +135,6 @@ class ParameterSet:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ParameterSet":
-        # v1 had a flat unversioned shape. Reject with an actionable migration error.
         if "schema_version" not in raw:
             raise ArtifactValidationError(
                 "Legacy ParameterSet artifact has no schema_version. Re-run calibration_cli.py calibrate "

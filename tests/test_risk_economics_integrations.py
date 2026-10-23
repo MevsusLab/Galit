@@ -1,4 +1,3 @@
-"""API, dashboard and bot integration tests for risk economics."""
 import copy
 
 import pytest
@@ -8,7 +7,6 @@ import dashboard
 import telegram_bot as tb
 from api import app
 from tests.test_api import WELL
-
 
 client = TestClient(app)
 

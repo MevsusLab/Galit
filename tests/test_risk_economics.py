@@ -1,4 +1,3 @@
-"""Per-well risk economics tests."""
 import math
 
 import pytest

@@ -22,7 +22,7 @@ def test_equipment_api_happy_errors_and_portfolio(tmp_path, monkeypatch):
     assert client.get("/api/v1/equipment/forecast/missing").status_code == 404
     bad=snapshot | {"id":"bad", "timestamp":"2026-08-23T12:00:00"}
     assert client.post("/api/v1/equipment/telemetry", json=bad).status_code == 422
-    # Test ML anomaly endpoints
+
     anom_res = client.get("/api/v1/equipment/anomalies/API-W")
     assert anom_res.status_code == 200
     assert "anomaly_count" in anom_res.json()

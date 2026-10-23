@@ -5,7 +5,6 @@ from fastapi.testclient import TestClient
 from api import app
 import telegram_bot as tb
 
-
 client = TestClient(app)
 WELL = {
     "name": "Well A", "geometry": {"depth_m": 3200, "tubing_id_m": .062},

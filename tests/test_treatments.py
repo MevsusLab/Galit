@@ -15,7 +15,6 @@ from galit import (
     treatment_summary,
 )
 
-
 NOW = datetime(2026, 8, 23, 12, tzinfo=timezone.utc)
 
 

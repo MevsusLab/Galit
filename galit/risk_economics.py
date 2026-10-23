@@ -1,8 +1,3 @@
-"""Аудируемая экономика риска для одной скважины.
-
-Модуль не содержит цен, валютных курсов или нормативов стоимости. Денежные
-показатели появляются только при явных входах в одной валюте.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,8 +13,6 @@ class RiskEconomicsStatus(str, Enum):
 
 @dataclass(frozen=True)
 class RiskEconomicsInput:
-    """Явные входы расчёта; длительности задаются в сутках."""
-
     event_probability: float | None
     horizon_days: float
     treatment_efficiency: float
@@ -85,7 +78,6 @@ class RiskEconomicsResult:
     breakdown: RiskEconomicsBreakdown
     limitations: tuple[str, ...] = field(default_factory=tuple)
 
-
 FORMULAS = {
     "gross_production_at_risk_m3": "oil_rate_m3_day × horizon_days × production_loss_fraction",
     "expected_production_loss_m3": "gross_production_at_risk_m3 × event_probability",
@@ -102,7 +94,6 @@ FORMULAS = {
 
 
 def calculate_risk_economics(inputs: RiskEconomicsInput) -> RiskEconomicsResult:
-    """Рассчитать unit economics без скрытых ставок и смешения валют."""
     gross = inputs.oil_rate_m3_day * inputs.horizon_days * inputs.production_loss_fraction
     probability = inputs.event_probability
     expected_m3 = gross * probability if probability is not None else None

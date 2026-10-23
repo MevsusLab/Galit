@@ -1,4 +1,3 @@
-"""CSV/XLSX history loading, validation, templates and WellCase mapping."""
 from __future__ import annotations
 
 import csv
@@ -39,7 +38,6 @@ VALID_QUALITY = {"good", "questionable", "bad"}
 
 
 def _charge_balance(row: dict[str, Any]) -> float | None:
-    # meq/L using equivalent weights; positive/negative imbalance is diagnostic only.
     c = (row["na_mg_l"]/22.99 + row["k_mg_l"]/39.10 +
          row["ca_mg_l"]/20.04 + row["mg_mg_l"]/12.15)
     a = (row["cl_mg_l"]/35.45 + row["hco3_mg_l"]/61.02 + row["so4_mg_l"]/48.03)
@@ -181,7 +179,6 @@ def assert_no_leakage(features: list[str] | tuple[str, ...] | set[str]) -> None:
 
 
 def snapshot_to_well_case(snapshot: WellSnapshot):
-    """Map without defaults; validation guarantees every constructor input."""
     from galit.integrated import DataProvenance, WellCase
     from galit.scale import WaterAnalysis
     from galit.wax import WaxProperties

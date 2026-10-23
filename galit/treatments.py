@@ -1,8 +1,3 @@
-"""Journal of interventions and observed effects.
-
-The module deliberately keeps plans separate from assessed outcomes. JSON storage is
-versioned and replaced atomically; analytics only uses explicitly assessed records.
-"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
@@ -32,7 +27,6 @@ class TreatmentStatus(str, Enum):
     COMPLETED = "completed"
     ASSESSED = "assessed"
 
-
 ALLOWED_TRANSITIONS = {
     TreatmentStatus.PLANNED: {TreatmentStatus.IN_PROGRESS},
     TreatmentStatus.IN_PROGRESS: {TreatmentStatus.COMPLETED},
@@ -42,7 +36,7 @@ ALLOWED_TRANSITIONS = {
 
 
 class TreatmentStorageError(RuntimeError):
-    """Storage is unavailable, corrupt, or could not be updated safely."""
+    pass
 
 
 class TreatmentNotFoundError(LookupError):
@@ -50,7 +44,7 @@ class TreatmentNotFoundError(LookupError):
 
 
 class TreatmentConflictError(RuntimeError):
-    """A stale revision or immutable assessed record was submitted."""
+    pass
 
 
 def _aware(value: datetime, name: str) -> datetime:
@@ -222,7 +216,6 @@ class TreatmentRecord:
 
 
 class TreatmentRepository:
-    """Small local JSON repository with process/thread locking and atomic replacement."""
     _locks: dict[str, threading.RLock] = {}
     _guard = threading.Lock()
 
@@ -475,7 +468,6 @@ def compare_reagents(records: Iterable[TreatmentRecord], reagent_a: str, reagent
         "warning": "Наблюдательная связь не доказывает причинность; скрытые различия групп не контролируются.",
     }
 
-
 CSV_COLUMNS = (
     "id", "well_id", "well_name", "field_name", "cluster", "site", "event_at",
     "complication_type", "treatment_type", "reagent_name", "reagent_id", "dosage",
@@ -485,7 +477,6 @@ CSV_COLUMNS = (
 
 
 def treatment_effect(item: TreatmentRecord) -> dict[str, Any]:
-    """Explain one observed effect without inventing missing values or precision."""
     before, after, days = item.rate_before_m3_day, item.rate_after_m3_day, item.effect_duration_days
     delta = after - before if before is not None and after is not None else None
     percent = delta / before * 100 if delta is not None and before not in (None, 0) else None
@@ -511,7 +502,6 @@ def treatment_effect(item: TreatmentRecord) -> dict[str, Any]:
 
 def treatment_analytics(records: Iterable[TreatmentRecord], *,
                         min_sample_size: int = DEFAULT_MIN_SAMPLE_SIZE) -> dict[str, Any]:
-    """Portfolio analytics; cohorts retain field/mechanism context and sample size."""
     if min_sample_size < 2:
         raise ValueError("min_sample_size must be at least 2")
     rows = [item for item in records if not item.archived]

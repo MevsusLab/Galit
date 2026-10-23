@@ -1,8 +1,3 @@
-"""Минимальный пример: одна скважина, свои данные.
-
-Скопируйте этот файл, подставьте свои цифры, запустите:
-    python example_one_well.py
-"""
 from galit import (
     FluidProperties,
     ProductionRate,
@@ -17,36 +12,31 @@ from galit import (
 case = WellCase(
     name="Речицкая 123",
 
-    # --- 1. Конструкция скважины ---
     geometry=WellGeometry(
-        depth_m=3200.0,          # глубина по стволу до забоя, м
-        tubing_id_m=0.062,       # ВНУТРЕННИЙ диаметр НКТ, м (62 мм)
-        inclination_deg=15.0,    # средний угол от вертикали, град
+        depth_m=3200.0,
+        tubing_id_m=0.062,
+        inclination_deg=15.0,
     ),
 
-    # --- 2. Режим работы (замер на устье) ---
     rate=ProductionRate(
-        q_oil_m3d=8.0,           # дебит нефти, м3/сут
-        q_water_m3d=72.0,        # дебит воды, м3/сут  (обводнённость 90 %)
-        gor_m3m3=65.0,           # газовый фактор, м3/м3
+        q_oil_m3d=8.0,
+        q_water_m3d=72.0,
+        gor_m3m3=65.0,
     ),
 
-    # --- 3. Свойства флюидов ---
     fluid=FluidProperties(
-        gamma_oil=0.86,          # отн. плотность нефти по воде
-        gamma_gas=0.78,          # отн. плотность газа по воздуху
-        salinity_ppm=290_000.0,  # минерализация воды, мг/л
+        gamma_oil=0.86,
+        gamma_gas=0.78,
+        salinity_ppm=290_000.0,
     ),
 
-    # --- 4. Теплофизика ---
     thermal=ThermalParams(
-        t_surface_c=8.0,         # температура пород у поверхности, C
-        geothermal_grad=0.033,   # геотермический градиент, К/м
-        u_to=15.0,               # коэф. теплопередачи, Вт/(м2*К)
-        production_days=400.0,   # сколько суток работает непрерывно
+        t_surface_c=8.0,
+        geothermal_grad=0.033,
+        u_to=15.0,
+        production_days=400.0,
     ),
 
-    # --- 5. Химанализ пластовой воды (мг/л) ---
     water=WaterAnalysis(
         ions_mg_l={
             "Na": 95_000.0,
@@ -58,21 +48,19 @@ case = WellCase(
             "SO4": 250.0,
         },
         ph=6.0,
-        t_c=40.0,                # температура отбора пробы
-        p_pa=5e6,                # давление отбора пробы, Па
+        t_c=40.0,
+        p_pa=5e6,
     ),
 
-    # --- 6. Парафинистость (лабораторный замер) ---
     wax=WaxProperties(
-        wat_stock_tank_c=34.0,   # WAT дегазированной нефти, C
-        wax_content_pct=6.5,     # содержание парафина, % масс.
+        wat_stock_tank_c=34.0,
+        wax_content_pct=6.5,
     ),
 
-    # --- 7. Прочее ---
-    co2_mol_frac=0.012,          # доля CO2 в попутном газе (1,2 %)
-    inhibitor_efficiency=0.0,    # 0 = без ингибитора, 0.9 = 90 % защиты
-    lift_type="ЭЦН",             # ЭЦН | ШГН | фонтан
-    p_wellhead_pa=1.4e6,         # буферное давление, Па
+    co2_mol_frac=0.012,
+    inhibitor_efficiency=0.0,
+    lift_type="ЭЦН",
+    p_wellhead_pa=1.4e6,
 )
 
 r = diagnose(case)

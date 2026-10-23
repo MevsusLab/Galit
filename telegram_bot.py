@@ -1,22 +1,3 @@
-"""ГАЛИТ | Telegram-бот мастера добычи: экспресс-диагностика АСПО.
-
-Альтернативный интерфейс к расчётному ядру galit для полевого персонала:
-мастер отправляет параметры скважины одной командой и получает
-глубину начала отложения АСПО и рекомендацию по химической обработке.
-
-Запуск:
-    set GALIT_BOT_TOKEN=123456:ABC...   (токен от @BotFather)
-    python telegram_bot.py
-
-Примеры команды /aspo:
-    /aspo 3200 62 8 72 65 34
-        позиционно: глубина, м · НКТ, мм · дебит нефти, м3/сут ·
-        дебит воды, м3/сут · газовый фактор, м3/м3 · WAT, °C
-    /aspo 3200 62 8 72 65 34 способ=ШГН парафин=6.5
-        то же + именованные параметры (список -- /help)
-
-Ответ строго структурирован, без эмодзи и украшательств.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -70,14 +51,8 @@ from galit.wellbore import (
 from galit.scale import WaterAnalysis
 from galit.wax import WaxProperties
 
-# Секреты загружаются только при запуске main(), но не при импорте в тестах.
 BOT_TOKEN = ""
 
-# ==========================================================================
-# Разбор параметров команды (чистые функции -- тестируются pytest)
-# ==========================================================================
-
-# Именованные параметры: алиасы (RU/EN, регистр не важен) -> ключ.
 KEY_ALIASES = {
     "глубина": "depth_m", "depth": "depth_m", "h": "depth_m",
     "нкт": "tubing_mm", "tubing": "tubing_mm", "d": "tubing_mm",
@@ -96,13 +71,11 @@ KEY_ALIASES = {
     "долгота": "longitude", "lon": "longitude", "lng": "longitude",
 }
 
-# Позиционные аргументы /aspo в порядке следования
 POSITIONAL_KEYS = ["depth_m", "tubing_mm", "q_oil_m3d",
                    "q_water_m3d", "gor_m3m3", "wat_c"]
 
 LIFT_TYPES = {"эцн": "ЭЦН", "шгн": "ШГН", "фонтан": "фонтан", "esp": "ЭЦН"}
 
-# Диапазоны физической допустимости: ключ -> (мин, макс, подпись для сообщений)
 RANGES: dict[str, tuple[float, float, str]] = {
     "depth_m": (100.0, 8000.0, "глубина, м (100–8000)"),
     "tubing_mm": (20.0, 200.0, "внутренний диаметр НКТ, мм (20–200)"),
@@ -119,7 +92,6 @@ RANGES: dict[str, tuple[float, float, str]] = {
     "longitude": (-180.0, 180.0, "долгота WGS84"),
 }
 
-# Значения по умолчанию, отсутствующие в ядре WellCase
 DEFAULTS: dict[str, float | str] = {
     "t_surface_c": 8.0,
     "geothermal_grad": 0.033,
@@ -129,9 +101,6 @@ DEFAULTS: dict[str, float | str] = {
     "lift_type": "ЭЦН",
 }
 
-# Типовой солевой состав пластовой воды Припятского прогиба (мг/л).
-# На глубину начала АСПО и подбор обработки не влияет -- нужен только
-# для расчёта сопутствующих механизмов (соли, коррозия).
 TYPICAL_BRINE = {
     "Na": 95_000.0, "Cl": 205_000.0, "Ca": 28_000.0, "Mg": 3_100.0,
     "K": 1_800.0, "HCO3": 130.0, "SO4": 250.0,
@@ -142,8 +111,6 @@ REQUIRED_KEYS = ["depth_m", "tubing_mm", "q_oil_m3d",
 
 
 class RecentDiagnosisStore:
-    """Bounded in-memory per-chat history; stores only domain objects for this process."""
-
     def __init__(self, per_chat_limit: int = 20, chat_limit: int = 500):
         self.per_chat_limit = per_chat_limit
         self.chat_limit = chat_limit
@@ -163,7 +130,6 @@ class RecentDiagnosisStore:
         history = self._chats.pop(chat_id, ())
         return len(history)
 
-
 RECENT_DIAGNOSES = RecentDiagnosisStore()
 TELEGRAM_TEXT_LIMIT = 4096
 TREATMENTS = galit.TreatmentRepository(os.environ.get("GALIT_TREATMENT_STORAGE", "data/treatments.json"))
@@ -182,7 +148,6 @@ def smart_map_service() -> galit.SmartMapService:
 def twin_service() -> galit.DigitalTwinService:
     return galit.build_default_service(watercut=WATERCUT, equipment=EQUIPMENT,
         treatments=TREATMENTS, passports=PASSPORTS, manual=TWIN_EVENTS)
-
 
 PASSPORT_ALIASES = {
     "well": "well", "скважина": "well", "type": "event_type", "тип": "event_type",
@@ -236,7 +201,6 @@ def format_passport_history(events: list[galit.PassportEvent],
         blocks.append(f"{html.escape(row['event_at'][:10])} · {html.escape(row['event_type'])}\n{html.escape(row['title'])}")
     return _forecast_chunks(blocks)
 
-
 TREATMENT_ALIASES = {
     "well": "well", "скважина": "well", "event": "complication_type",
     "complication": "complication_type", "осложнение": "complication_type",
@@ -262,7 +226,6 @@ TREATMENT_ALIASES = {
 
 
 def treatment_tokens(text: str) -> tuple[list[str], list[str]]:
-    """Tokenize a command with shell-style quoted key=value values."""
     try:
         return shlex.split(text, posix=True)[1:], []
     except ValueError as exc:
@@ -270,7 +233,6 @@ def treatment_tokens(text: str) -> tuple[list[str], list[str]]:
 
 
 def parse_treatment_args(args: list[str], required: set[str]) -> tuple[dict[str, str], list[str]]:
-    """Parse RU/EN key=value arguments; values may contain spaces when quoted."""
     values: dict[str, str] = {}
     errors: list[str] = []
     for token in args:
@@ -312,7 +274,6 @@ def parse_utc_date(value: str) -> datetime:
 
 
 def resolve_treatment(repo: galit.TreatmentRepository, record_id: str) -> galit.TreatmentRecord:
-    """Allow an unambiguous ID prefix from list output without hiding ambiguity."""
     try:
         return repo.get(record_id)
     except galit.TreatmentNotFoundError:
@@ -444,12 +405,10 @@ def format_treatment_stats(records: list[galit.TreatmentRecord],
 
 
 def _normalized_well_name(value: str) -> str:
-    """Unicode/case/whitespace-insensitive well name used only for lookup."""
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
 def select_forecast_diagnosis(items: list[DiagnosedWell], query: str = "") -> DiagnosedWell:
-    """Select latest diagnosis or a unique normalized exact well-name match."""
     if not items:
         raise LookupError("История пуста. Сначала рассчитайте скважину через /aspo или пошаговый ввод.")
     normalized = _normalized_well_name(query)
@@ -465,7 +424,6 @@ def select_forecast_diagnosis(items: list[DiagnosedWell], query: str = "") -> Di
 
 
 def _forecast_chunks(blocks: list[str]) -> list[str]:
-    """Join escaped/self-contained blocks and split oversized blocks at safe boundaries."""
     limit = TELEGRAM_TEXT_LIMIT - 100
     normalized: list[str] = []
     for block in blocks:
@@ -495,7 +453,6 @@ def _forecast_chunks(blocks: list[str]) -> list[str]:
 
 
 def format_forecast_messages(item: DiagnosedWell) -> list[str]:
-    """Compact honest forecast: no as_of/history means no invented calendar dates."""
     forecast = forecast_well(item.diagnosis, item.case)
     blocks = [
         f"<b>Прогноз во времени · {html.escape(forecast.well)}</b>",
@@ -531,7 +488,6 @@ def format_forecast_messages(item: DiagnosedWell) -> list[str]:
 
 
 def parse_economics_args(args: list[str]) -> tuple[dict[str, float | str], list[str]]:
-    """Parse explicit /economics inputs; no monetary defaults are applied."""
     aliases = {
         "вероятность": "event_probability", "probability": "event_probability",
         "горизонт": "horizon_days", "horizon": "horizon_days",
@@ -582,7 +538,6 @@ def parse_economics_args(args: list[str]) -> tuple[dict[str, float | str], list[
 
 def format_economics_messages(item: DiagnosedWell,
                               values: dict[str, float | str]) -> list[str]:
-    """Render an escaped, bounded report from explicit single-currency inputs."""
     result = galit.calculate_risk_economics(galit.RiskEconomicsInput(
         event_probability=float(values["event_probability"]),
         horizon_days=float(values["horizon_days"]),
@@ -620,7 +575,6 @@ def format_economics_messages(item: DiagnosedWell,
 
 
 def parse_scenario_args(args: list[str]) -> tuple[dict[str, float | str | bool], list[str]]:
-    """Parse /scenario key=value changes; economic values remain optional."""
     aliases = {
         "нефть_%": "oil_rate_relative_change", "oil_pct": "oil_rate_relative_change",
         "нефть": "oil_rate_delta_m3_day", "oil_delta": "oil_rate_delta_m3_day",
@@ -744,7 +698,6 @@ def parse_equipment_query(text: str) -> str:
 
 
 def format_plan_messages(items: list[DiagnosedWell], top: int = 10) -> list[str]:
-    """Build escaped compact HTML chunks within Telegram's message limit."""
     if not items:
         return ["История пуста. Сначала выполните /aspo или пошаговый расчёт."]
     plan = generate_master_plan(items, limit=top)
@@ -781,7 +734,6 @@ def format_plan_messages(items: list[DiagnosedWell], top: int = 10) -> list[str]
 
 
 def format_map_messages(items: list[DiagnosedWell]) -> list[str]:
-    """Text-only map summary for field use; no unsupported interactive attachment."""
     if not items:
         return ["История пуста. Сначала выполните /aspo, при необходимости задав lat= и lon=."]
     data = galit.prepare_field_map(items)
@@ -812,7 +764,6 @@ def format_map_messages(items: list[DiagnosedWell]) -> list[str]:
 
 
 def _to_float(raw: str) -> float | None:
-    """Число с допуском запятой в качестве десятичного разделителя."""
     try:
         return float(raw.replace(",", "."))
     except ValueError:
@@ -820,12 +771,6 @@ def _to_float(raw: str) -> float | None:
 
 
 def parse_args(args: list[str]) -> tuple[dict[str, float | str], list[str]]:
-    """Разбор аргументов /aspo.
-
-    Поддерживаются позиционные значения (6 основных параметров по порядку)
-    и пары «ключ=значение» в любой комбинации. Возвращает
-    (параметры, список ошибок).
-    """
     params: dict[str, float | str] = {}
     errors: list[str] = []
     positional: list[float] = []
@@ -860,7 +805,6 @@ def parse_args(args: list[str]) -> tuple[dict[str, float | str], list[str]]:
                 continue
             positional.append(value)
 
-    # непомеченные значения распределяем по основным параметрам по порядку
     for value, key in zip(positional, POSITIONAL_KEYS):
         params[key] = value
 
@@ -878,8 +822,7 @@ def parse_args(args: list[str]) -> tuple[dict[str, float | str], list[str]]:
 
 
 def build_case(params: dict[str, float | str]) -> WellCase:
-    """Сборка WellCase из разобранных параметров с типовыми значениями."""
-    merged = {**DEFAULTS, **params}  # type: ignore[dict-item]
+    merged = {**DEFAULTS, **params}
     return WellCase(
         name=str(merged.get("name", "Скважина мастера")),
         geometry=WellGeometry(
@@ -930,11 +873,6 @@ def build_case(params: dict[str, float | str]) -> WellCase:
 
 
 def wax_treatment(result: galit.DiagnosisResult, case: WellCase) -> str:
-    """Подбор технологии борьбы с АСПО под глубину начала отложений.
-
-    Скребок на проволоке с поверхности достаёт ограниченно (~1500 м);
-    на ШГН скребки-центраторы идут вместе со штангами до забоя.
-    """
     max_scraper = 1500.0 if case.lift_type == "ЭЦН" else case.geometry.depth_m
     return recommend_wax_treatment(
         result.wax_onset_m, result.severity["wax"], max_scraper
@@ -942,7 +880,6 @@ def wax_treatment(result: galit.DiagnosisResult, case: WellCase) -> str:
 
 
 def _level(value: float) -> str:
-    """Понятный уровень для нормированной шкалы 0…1."""
     if value < 0.25:
         return "низкий"
     if value < 0.50:
@@ -953,7 +890,6 @@ def _level(value: float) -> str:
 
 
 def _format_rate(value: float) -> str:
-    """Показать малую скорость без ложного округления до нуля."""
     if value == 0:
         return "0"
     if abs(value) < 0.01:
@@ -962,7 +898,6 @@ def _format_rate(value: float) -> str:
 
 
 def _warning_summary(result: galit.DiagnosisResult) -> list[str]:
-    """Свести технические предупреждения к нескольким безопасным выводам."""
     warnings = [str(w) for w in result.warnings]
     lowered = " ".join(warnings).lower()
     summary: list[str] = []
@@ -995,7 +930,6 @@ def _warning_summary(result: galit.DiagnosisResult) -> list[str]:
 
 def format_report(result: galit.DiagnosisResult, case: WellCase,
                   treatment: str) -> str:
-    """Компактный HTML-отчёт для быстрого управленческого просмотра."""
     e = html.escape
     risk = float(result.integrated_risk)
     wax = float(result.severity["wax"])
@@ -1054,7 +988,6 @@ def _mech_ru(mech: str) -> str:
     return {"halite": "галит", "calcite": "кальцит", "wax": "АСПО",
             "corrosion": "коррозия"}.get(mech, mech)
 
-
 COMPATIBILITY_ION_KEYS = {"Na", "Cl", "Ca", "Ba", "SO4", "HCO3", "CO3"}
 COMPATIBILITY_ALIASES = {
     "name": "name", "имя": "name", "вода": "name",
@@ -1066,7 +999,6 @@ COMPATIBILITY_REQUIRED = {"Na", "Cl", "Ca", "Ba", "SO4", "ph", "t_c", "p_mpa"}
 
 
 def parse_compatibility_water(text: str, default_name: str = "Вода") -> galit.CompatibilityWater:
-    """Parse one measured water from a compact semicolon-delimited key=value row."""
     values: dict[str, str] = {}
     for part in (item.strip() for item in text.strip().split(";") if item.strip()):
         if "=" not in part:
@@ -1102,7 +1034,6 @@ def parse_compatibility_water(text: str, default_name: str = "Вода") -> gali
 
 
 def parse_compatibility_rows(rows: list[dict[str, object]]) -> tuple[galit.CompatibilityWater, galit.CompatibilityWater]:
-    """Parse exactly two tabular water rows (CSV/XLSX column names equal compact keys)."""
     if len(rows) != 2:
         raise ValueError("документ должен содержать ровно две строки воды")
     parsed = []
@@ -1116,7 +1047,6 @@ def parse_compatibility_rows(rows: list[dict[str, object]]) -> tuple[galit.Compa
 def parse_compatibility_document(data: bytes, filename: str) -> tuple[
         tuple[galit.CompatibilityWater, galit.CompatibilityWater],
         tuple[galit.ProfilePoint, ...] | None, galit.DoseResponseCurve | None]:
-    """Read two waters and optional measured profile/validated curve from CSV/XLSX."""
     suffix = Path(filename).suffix.casefold()
     profile = None
     curve = None
@@ -1197,7 +1127,6 @@ def format_compatibility_report(result: galit.CompatibilityResult,
     blocks.append("Screening показывает термодинамическую склонность, а не скорость или массу осадка; решение подтвердить лабораторно.")
     return _forecast_chunks(blocks)
 
-
 CHEMICAL_ALIASES = {
     "id": "product_id", "product": "product_id", "продукт": "product_id",
     "hazard": "hazards", "hazards": "hazards", "риск": "hazards", "риски": "hazards",
@@ -1220,7 +1149,6 @@ CHEMICAL_KINDS = {
 
 
 def parse_chemical_command(text: str) -> tuple[dict[str, str], list[str]]:
-    """Strict shell-style key=value parser shared by chemical commands."""
     try:
         tokens = shlex.split(text, posix=True)[1:]
     except ValueError as exc:
@@ -1260,7 +1188,6 @@ def _nonnegative_int(raw: str, field: str) -> int:
 
 
 def resolve_chemical_product(repo: galit.ChemicalRepository, query: str) -> galit.ChemicalProduct:
-    """Resolve exact ID/name or an unambiguous ID prefix without guessing."""
     normalized = query.strip().casefold()
     products = repo.list_products()
     exact = [x for x in products if x.id.casefold() == normalized or x.name.casefold() == normalized]
@@ -1322,7 +1249,6 @@ def format_stock(product: galit.ChemicalProduct, stock: dict[str, object]) -> li
 
 def chemical_shortage_rows(repo: galit.ChemicalRepository, *, lead_time_days: int,
                             safety_stock_days: int, as_of: date) -> list[dict[str, object]]:
-    """Build shortage rows; lack of consumption history remains explicitly unavailable."""
     rows: list[dict[str, object]] = []
     horizon = lead_time_days + safety_stock_days
     for product in repo.list_products():
@@ -1430,7 +1356,6 @@ def format_mutation_preview(preview: dict[str, object]) -> str:
 
 def execute_chemical_preview(repo: galit.ChemicalRepository,
                              preview: dict[str, object]) -> object:
-    """Execute a validated preview against its captured repository revision."""
     revision = int(preview["expected_revision"])
     if preview["action"] == "reserve":
         return repo.reserve(
@@ -1459,7 +1384,6 @@ def execute_chemical_preview(repo: galit.ChemicalRepository,
         str(preview["reference"]),
     )
     return repo.append_transaction(tx, expected_revision=revision)
-
 
 MENU_NEW = "🔎 Новый расчёт"
 MENU_HELP = "ℹ️ Справка"
@@ -1535,7 +1459,6 @@ class CompatibilityCalculation(StatesGroup):
 class ChemicalMutation(StatesGroup):
     confirming = State()
 
-
 COMPATIBILITY_PROMPT = (
     "Отправьте воду {label} одной строкой (все концентрации — измеренные, мг/л):\n"
     "<code>name=Пластовая; Na=20000; Cl=32000; Ca=4000; Ba=1000; "
@@ -1547,7 +1470,6 @@ COMPATIBILITY_PROMPT = (
 
 
 def validate_fsm_value(key: str, raw: str) -> tuple[float | None, str | None]:
-    """Проверить одно значение пошагового ввода через общие диапазоны."""
     value = _to_float(raw.strip())
     if value is None:
         return None, "Введите число. Допускается десятичная запятая."
@@ -1558,7 +1480,6 @@ def validate_fsm_value(key: str, raw: str) -> tuple[float | None, str | None]:
 
 
 async def send_calculation(message: Message, params: dict[str, float | str]) -> None:
-    """Выполнить расчёт и отправить отчёт для команды и FSM."""
     case = build_case(params)
     try:
         result = await asyncio.to_thread(diagnose, case)
@@ -1572,11 +1493,6 @@ async def send_calculation(message: Message, params: dict[str, float | str]) -> 
         format_report(result, case, wax_treatment(result, case)),
         disable_web_page_preview=True, reply_markup=MAIN_MENU,
     )
-
-
-# ==========================================================================
-# Обработчики aiogram
-# ==========================================================================
 
 dp = Dispatcher()
 
@@ -1629,7 +1545,6 @@ async def cmd_injectors(message: Message) -> None:
 
 
 def parse_smart_map_command(text: str) -> tuple[str | None, int, list[str]]:
-    """Strict mechanism/days parser shared by /hotspots and /spread."""
     parts=(text or "").split()[1:]; mechanism=None; days=30; errors=[]
     for value in parts:
         if value.isdigit():
@@ -2145,7 +2060,6 @@ async def cmd_passport_rate(message: Message) -> None:
 
 
 def parse_twin_command(text: str, *, allow_days: bool = False) -> tuple[str, int, list[str]]:
-    """Strict parser for /twin, /timeline and /changes."""
     try: tokens = shlex.split(text, posix=True)[1:]
     except ValueError as exc: return "", 30, ["ошибка кавычек: " + str(exc)]
     days = 30
@@ -2444,7 +2358,6 @@ async def main() -> None:
     except TelegramUnauthorizedError:
         print("Токен отклонён Telegram (401). Проверьте GALIT_BOT_TOKEN у @BotFather.")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     asyncio.run(main())

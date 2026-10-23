@@ -1,8 +1,3 @@
-"""Тесты чистых функций дашборда: разбор файла, ранжирование, профили.
-
-Дашборд импортируется целиком (вне Streamlit-рантайма его вызовы
-безопасно игнорируются), поэтому тестируются только функции без UI.
-"""
 from __future__ import annotations
 
 import base64
@@ -19,7 +14,6 @@ from streamlit.testing.v1 import AppTest
 import dashboard
 from galit import diagnose
 
-
 MINIMAL_CSV = (
     "name,depth_m,tubing_id_m,q_oil_m3d,q_water_m3d,gor_m3m3,wat_stock_tank_c\n"
     "139,3200,0.062,8,72,65,34\n"
@@ -27,7 +21,6 @@ MINIMAL_CSV = (
 
 
 def base_row() -> dict:
-    """Минимальная строка фонда: только обязательные колонки."""
     return {
         "name": "Речицкая 123",
         "depth_m": 3200.0,
@@ -38,8 +31,6 @@ def base_row() -> dict:
         "wat_stock_tank_c": 34.0,
     }
 
-
-# ---------------------------------------------------------------- заголовки
 
 def test_normalize_headers_aliases_and_ions():
     mapping = dashboard.normalize_headers(
@@ -53,19 +44,17 @@ def test_normalize_headers_aliases_and_ions():
     assert "МусорнаяКолонка" not in mapping
 
 
-# ------------------------------------------------------------ разбор таблицы
-
 def test_frame_to_cases_minimal_columns_use_defaults():
     cases, errors = dashboard.frame_to_cases(pd.DataFrame([base_row()]))
     assert errors == []
     assert len(cases) == 1
     case = cases[0]
     assert case.name == "Речицкая 123"
-    # значения по умолчанию ядра подставлены для отсутствующих колонок
+
     assert case.geometry.inclination_deg == 0.0
     assert case.fluid.gamma_oil == 0.86
     assert case.wax.wax_content_pct == 5.0
-    # ионный состав не задан -- подставлен типовой рассол
+
     assert case.water.ions_mg_l == dashboard.TYPICAL_BRINE
 
 
@@ -126,19 +115,16 @@ def test_frame_to_cases_non_numeric_optional_falls_back_to_default():
     row = base_row() | {"gamma_oil": "много"}
     cases, errors = dashboard.frame_to_cases(pd.DataFrame([row]))
     assert len(cases) == 1
-    assert cases[0].fluid.gamma_oil == 0.86   # ядро приняло замену
+    assert cases[0].fluid.gamma_oil == 0.86
     assert any("gamma_oil" in e for e in errors)
 
 
 def test_frame_to_cases_ion_columns_parsed():
     row = base_row() | {"Na": 90000.0, "Cl": 200000.0, "Ca": 0.0}
     cases, _ = dashboard.frame_to_cases(pd.DataFrame([row]))
-    # Ca = 0 отбрасывается как отсутствующий, типовой состав не подставляется,
-    # т.к. есть реальные ионы
+
     assert cases[0].water.ions_mg_l == {"Na": 90000.0, "Cl": 200000.0}
 
-
-# ------------------------------------------------------- ранжирование/статусы
 
 def test_risk_status_thresholds():
     assert dashboard.risk_status(0.10)[2] == "норма"
@@ -172,14 +158,12 @@ def test_result_labels_deduplicates_names():
     assert dashboard.unique_labels([original, twin]) == labels
 
 
-# ------------------------------------------------------------------- профили
-
 def test_fig_profiles_traces_and_duplicate_labels():
     case = dashboard.galit.synthetic.make_fund(1, seed=7)[0]
     results = [diagnose(case), diagnose(case)]
     labels = dashboard.unique_labels(results)
     fig = dashboard.fig_profiles(results, labels, detail=results[0])
-    # 2 скважины x (T + P) + WAT в детальном разборе
+
     assert len(fig.data) == 5
 
 
@@ -254,8 +238,6 @@ def test_field_map_has_explicit_approximate_pripyat_context():
     assert "Подложка OpenStreetMap требует интернет" in source
 
 
-# -------------------------------------------------------------- шаблон XLSX
-
 def test_template_bytes_roundtrip():
     book = dashboard.template_bytes()
     df = pd.read_excel(io.BytesIO(book), sheet_name="Данные")
@@ -263,7 +245,7 @@ def test_template_bytes_roundtrip():
     assert errors == []
     assert len(cases) == 1
     assert cases[0].name == "Речицкая 123"
-    # лист-инструкция на месте
+
     docs = pd.read_excel(io.BytesIO(book), sheet_name="Инструкция")
     assert list(docs.columns)[0] == "Колонка"
 
@@ -306,9 +288,6 @@ def test_empty_results_status_distinguishes_parsing_from_quality_gate():
     kind, message = dashboard.empty_results_status(0, production_mode=False)
     assert kind == "parsing"
     assert "не распознана" in message
-
-
-# ------------------------------------------ совместимость двух измеренных вод
 
 
 def compatibility_rows() -> pd.DataFrame:
@@ -371,8 +350,6 @@ def test_compatibility_profile_and_validated_dose_curve_adapters():
     curve = dashboard.compatibility_curve_from_frame("X", "barite", "lab-1", True, curve_frame)
     assert curve.validated and curve.validation_reference == "lab-1"
 
-
-# --------------------------------------------- trust / explainability helpers
 
 def test_contributions_are_consistent_with_integrated_risk():
     result = diagnose(dashboard.galit.synthetic.make_fund(1, seed=11)[0])
@@ -447,8 +424,6 @@ def test_master_plan_helpers_use_current_cases_and_export_russian_csv():
     assert "Скважина" in csv and "Safe-to-act" in csv
 
 
-# --------------------------------------------- Streamlit upload regression
-
 def test_twin_timeline_categories_and_figure():
     categories = dashboard.twin_timeline_categories()
     assert categories == [item.value for item in dashboard.galit.EventCategory]
@@ -486,9 +461,6 @@ def test_twin_components_use_configured_repository_paths(tmp_path, monkeypatch):
     assert [item["display_name"] for item in loaded_service.list_wells()] == [case.name]
     assert loaded_service.snapshot(case.name).state == "insufficient_data"
     assert not paths["GALIT_TWIN_EVENT_STORAGE"].exists()
-
-
-# --------------------------------------------------- Feature 9 / chemicals UI
 
 
 def _chemical_product(**overrides):
@@ -625,8 +597,6 @@ def test_apptest_upload_renders_master_plan_as_first_tab():
     assert any(button.label == "\u0421\u043a\u0430\u0447\u0430\u0442\u044c \u043f\u043b\u0430\u043d CSV" for button in app.get("download_button"))
 
 
-# ------------------------------------------------ accessibility / contrast
-
 def _contrast_ratio(foreground: str, background: str) -> float:
     def luminance(color: str) -> float:
         channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
@@ -682,14 +652,11 @@ def test_status_pairs_and_styler_foregrounds_meet_wcag():
     assert "#2E7D32" not in html and "#B26A00" not in html and "#C62828" not in html
 
 
-# ------------------------------------------------- typography / icon library
-
 def test_outfit_is_primary_font_with_cyrillic_fallback_and_local_faces():
     assert dashboard.FONT_FAMILY.startswith("Outfit, Manrope,")
     config = Path(".streamlit/config.toml").read_text(encoding="utf-8")
     assert re.search(r'^font\s*=\s*"Outfit, Manrope, sans serif"$', config, re.MULTILINE)
 
-    # Outfit не содержит кириллицу, поэтому Manrope обязателен и должен покрывать U+04xx.
     families = {family for family, _, _ in dashboard.FONT_FACES}
     assert families == {"Outfit", "Manrope"}
     cyrillic = [
@@ -703,7 +670,7 @@ def test_outfit_is_primary_font_with_cyrillic_fallback_and_local_faces():
     for family, _, unicode_range in dashboard.FONT_FACES:
         assert f"font-family:'{family}'" in css
         assert f"unicode-range:{unicode_range}" in css
-    # Переменный woff2 отдаёт весь диапазон весов одним файлом.
+
     assert "font-weight:200 700" in css
     assert "data:font/woff2;base64," in css
 
@@ -724,8 +691,7 @@ def test_typography_uses_light_weights_only():
     source = Path("dashboard.py").read_text(encoding="utf-8")
     css_start = source.index("def inject_css")
     css = source[css_start:source.index("\ninject_css()")]
-    # Прежний дизайн держал 650-900; после облегчения числовых литералов
-    # в CSS не остаётся вовсе — только токены WEIGHT_*.
+
     assert not re.findall(r"font-weight:\s*[0-9]+", css)
     for token in ("{WEIGHT_REGULAR}", "{WEIGHT_MEDIUM}"):
         assert token in css
@@ -739,7 +705,6 @@ def test_borders_are_removed_or_kept_subtle():
     source = Path("dashboard.py").read_text(encoding="utf-8")
     css = source[source.index("def inject_css"):source.index("\ninject_css()")]
 
-    # Жёсткая непрозрачная обводка карточек убрана полностью.
     assert not re.findall(r"border[^:}\n]*:\s*1px solid \{HAIRLINE\}", css)
     assert "{HAIRLINE_SOFT}" in css and "{HAIRLINE_FAINT}" in css
 
@@ -751,7 +716,6 @@ def test_borders_are_removed_or_kept_subtle():
         block = block[:block.index("}}")]
         assert re.search(r"border:\s*0|border:\s*none", block), surface
 
-    # Полупрозрачные линии заметно светлее прежнего #E7EBE8.
     for token in ("HAIRLINE_SOFT", "HAIRLINE_FAINT"):
         declaration = re.search(rf'{token} = "(.+?)"', source).group(1)
         assert declaration.startswith("rgba(")
@@ -760,11 +724,10 @@ def test_borders_are_removed_or_kept_subtle():
 
 def test_icons_come_from_lucide_library_without_handwritten_paths():
     source = Path("dashboard.py").read_text(encoding="utf-8")
-    # Ни одной вручную нарисованной геометрии: путей и viewBox в коде нет.
+
     assert "<path" not in source
     assert "viewBox" not in source
-    # Единственное место, где вообще встречается тег svg, — постобработка
-    # готового файла Lucide внутри lucide_icon().
+
     helper = source[source.index("def lucide_icon"):source.index("def icon_span")]
     assert source.count("<svg") == helper.count("<svg")
 
@@ -772,7 +735,7 @@ def test_icons_come_from_lucide_library_without_handwritten_paths():
     assert 'class="gx-icon lucide lucide-circle-check"' in icon
     assert 'width="15" height="15"' in icon
     assert 'aria-hidden="true"' in icon
-    assert "<!--" not in icon  # лицензионный комментарий не попадает в разметку
+    assert "<!--" not in icon
     assert dashboard.lucide_icon("definitely-missing-icon") == ""
     assert dashboard.icon_span("definitely-missing-icon") == ""
     assert dashboard.icon_span("circle-check").startswith('<span class="gx-icon-wrap">')
@@ -793,7 +756,7 @@ def test_icon_assets_are_vendored_with_license():
                  "circle-check", "triangle-alert", "trending-up", "circle-dot",
                  "layers", "map-pin", "chevron-down", "arrow-right", "gauge"):
         markup = (dashboard.ICON_DIR / f"{name}.svg").read_text(encoding="utf-8")
-        assert "lucide-static" in markup  # апстрим-происхождение сохранено
+        assert "lucide-static" in markup
 
     assert dashboard.FAVICON_ASSET.is_file()
 
@@ -833,13 +796,11 @@ def test_galit_brand_assets_are_flat_vector_and_transparent_rasters():
 
 def test_ui_renders_lucide_icons_instead_of_emoji_placeholders():
     source = Path("dashboard.py").read_text(encoding="utf-8")
-    # Символы-заглушки прежнего дизайна и эмодзи-favicon удалены.
+
     for placeholder in ("◌", "▦", "◆", "↗", "▣", "▽", "⌄", "◉", "🛢"):
         assert placeholder not in source
     assert 'page_icon="' not in source
 
-    # Шапка рендерится через st.html и в AppTest.markdown не попадает,
-    # поэтому её иконки проверяем в исходнике.
     header = source[source.index("def render_header"):source.index("def render_welcome")]
     assert 'icon_span("layers"' in header
     assert 'icon_span("map-pin"' in header
@@ -857,8 +818,6 @@ def test_ui_renders_lucide_icons_instead_of_emoji_placeholders():
     assert rendered & {"triangle-alert", "trending-up", "circle-dot", "circle-check"}
     assert 'class="gx-icon-wrap"' in markup
 
-
-# ----------------------------------------------- forecast parser / timeline
 
 def test_forecast_history_parser_requires_timezone_and_preserves_undated():
     csv = (
@@ -894,8 +853,6 @@ def test_apptest_demo_has_economics_and_forecast_tabs():
     assert "Оборудование / Прогноз отказов" in labels
     assert labels[-3:] == ["Цифровой паспорт", "Цифровой двойник", "Журнал мероприятий"]
 
-
-# ------------------------------------------------ treatment journal UI
 
 def test_treatment_helpers_autofill_and_currency_rows():
     case = dashboard.galit.synthetic.make_fund(1, seed=31)[0]

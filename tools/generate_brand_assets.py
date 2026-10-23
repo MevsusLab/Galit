@@ -1,4 +1,3 @@
-"""Generate GALIT web icon rasters from the repository SVG geometry."""
 from __future__ import annotations
 
 import re
@@ -14,7 +13,6 @@ SCALE = 16
 
 
 def _sample_path(data: str) -> list[tuple[float, float]]:
-    """Sample the SVG's single M/L/H/V/C path into a high-resolution polygon."""
     tokens = re.findall(r"[A-Za-z]|-?(?:\d+(?:\.\d*)?|\.\d+)", data)
     points: list[tuple[float, float]] = []
     cursor = (0.0, 0.0)
@@ -81,7 +79,7 @@ def main() -> None:
     viewbox = tuple(map(float, re.search(r'viewBox="([^"]+)"', markup).group(1).split()))
     data = re.search(r'<path[^>]+ d="([^"]+)"', markup).group(1)
     points = _sample_path(data)
-    # Apply the SVG transform: translate(1 0) scale(.94 1).
+
     points = [(1 + .94*x, y) for x, y in points]
     width, height = int(viewbox[2]), int(viewbox[3])
     rendered: dict[int, Image.Image] = {}
@@ -99,7 +97,6 @@ def main() -> None:
     rendered[48].save(
         OUT / "galit-favicon.ico", format="ICO", sizes=[(24, 24), (32, 32), (48, 48)]
     )
-
 
 if __name__ == "__main__":
     main()

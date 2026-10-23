@@ -1,11 +1,3 @@
-"""Чистый доменный генератор «План мастера на сегодня».
-
-Модуль не выполняет диагностику и не меняет физические модели. Он переводит
-готовые :class:`DiagnosisResult` и исходные :class:`WellCase` в безопасный,
-детерминированный план работ. План является инженерным screening/advisory:
-любое промышленное воздействие требует проверки данных, наряда-допуска и
-утверждённого регламента предприятия.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -15,7 +7,6 @@ import math
 from typing import Iterable
 
 from .integrated import DiagnosisResult, ScenarioInterval, WellCase
-
 
 DOMINANT_LABELS = {
     "halite": "галит",
@@ -27,8 +18,6 @@ DOMINANT_LABELS = {
 
 @dataclass(frozen=True)
 class MasterPlanPolicy:
-    """Детерминированные пороги диспетчеризации, не новая модель риска."""
-
     policy_id: str = "galit-master-plan"
     version: str = "1.0"
     low_risk_cutoff: float = 0.10
@@ -51,14 +40,11 @@ class MasterPlanPolicy:
         if not self.policy_id or not self.version:
             raise ValueError("Политика плана требует id и version")
 
-
 DEFAULT_MASTER_PLAN_POLICY = MasterPlanPolicy()
 
 
 @dataclass(frozen=True)
 class DiagnosedWell:
-    """Связка исходного кейса с уже рассчитанным результатом диагностики."""
-
     case: WellCase
     diagnosis: DiagnosisResult
 
@@ -69,8 +55,6 @@ class DiagnosedWell:
 
 @dataclass(frozen=True)
 class OilLossEstimate:
-    """Грубая оценка добычи под риском, м3/сут, а не прогноз фактической потери."""
-
     lower_m3d: float | None
     central_m3d: float | None
     upper_m3d: float | None
@@ -156,7 +140,6 @@ def _bounded_risk(value: float | None, fallback: float) -> float:
 
 
 def _loss_estimate(case: WellCase, result: DiagnosisResult) -> OilLossEstimate:
-    """Оценить добычу под риском без представления score как вероятности отказа."""
     rate = case.rate.q_oil_m3d
     if not math.isfinite(rate) or rate < 0.0:
         return OilLossEstimate(
@@ -295,11 +278,6 @@ def generate_master_plan(
     limit: int | None = None,
     policy: MasterPlanPolicy = DEFAULT_MASTER_PLAN_POLICY,
 ) -> MasterPlan:
-    """Сформировать отсортированный план, дедуплицируя имена скважин.
-
-    При дубле (регистр/пробелы не учитываются) сохраняется результат с большим
-    интегральным риском; при равенстве — лексикографически минимальный механизм.
-    """
     if limit is not None and limit < 0:
         raise ValueError("limit не может быть отрицательным")
     items = [item if isinstance(item, DiagnosedWell) else DiagnosedWell(*item) for item in diagnosed_wells]
@@ -347,7 +325,6 @@ def generate_master_plan(
         generated_at=stamp, plan_date=stamp.date(), policy_id=policy.policy_id,
         policy_version=policy.version, tasks=tuple(tasks), summary=summary,
     )
-
 
 __all__ = [
     "DEFAULT_MASTER_PLAN_POLICY", "DiagnosedWell", "MasterPlan",

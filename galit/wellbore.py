@@ -1,20 +1,3 @@
-"""Профили давления и температуры в стволе добывающей скважины.
-
-Температура -- Ramey (1962), аналитическое решение.
-Давление -- Beggs & Brill (1973), маршевый расчёт снизу вверх.
-
-Обе корреляции выбраны сознательно:
-  * Ramey имеет замкнутое решение и открытый бенчмарк для валидации
-    (OpenGeoSys EUBHE, расхождение < 0.15 %);
-  * Beggs-Brill -- единственная из классической тройки, работающая
-    при любых углах наклона, что нужно для наклонно-направленных
-    и горизонтальных скважин Речицкого месторождения.
-
-Ограничение Ramey: метод завышает температуру в раннем переходном
-периоде (Hagoort 2004, SPE J 9(4) 465-474). Применять при t > ~1 недели
-непрерывной работы. Для скважин в режиме КВЧ это ограничение
-существенно -- см. предупреждение в temperature_profile.
-"""
 from __future__ import annotations
 
 import math
@@ -36,24 +19,21 @@ from .fluids import (
 
 @dataclass
 class WellGeometry:
-    """Геометрия и режим работы скважины."""
-    depth_m: float                 # глубина по стволу до забоя
-    tubing_id_m: float             # внутренний диаметр НКТ
-    inclination_deg: float = 0.0   # средний угол от вертикали
-    roughness_m: float = 4.6e-5    # шероховатость стали
+    depth_m: float
+    tubing_id_m: float
+    inclination_deg: float = 0.0
+    roughness_m: float = 4.6e-5
 
     @property
     def theta_rad(self) -> float:
-        """Угол от горизонтали (для Beggs-Brill)."""
         return math.radians(90.0 - self.inclination_deg)
 
 
 @dataclass
 class ProductionRate:
-    """Дебиты в поверхностных условиях."""
     q_oil_m3d: float
     q_water_m3d: float
-    gor_m3m3: float                # газовый фактор
+    gor_m3m3: float
 
     @property
     def q_liquid_m3d(self) -> float:
@@ -68,48 +48,35 @@ class ProductionRate:
 
 @dataclass
 class FluidProperties:
-    """Свойства флюидов."""
     gamma_oil: float = 0.86
     gamma_gas: float = 0.75
     salinity_ppm: float = 300_000.0
-    surface_tension: float = 0.03   # Н/м
+    surface_tension: float = 0.03
 
 
 @dataclass
 class ThermalParams:
-    """Теплофизика для модели Ramey."""
-    t_surface_c: float = 8.0            # температура пород у поверхности
-    geothermal_grad: float = 0.033      # K/м
-    k_earth: float = 2.5                # Вт/(м*К)
-    alpha_earth: float = 1.0e-6         # м2/с
-    u_to: float = 15.0                  # Вт/(м2*К), к наружному радиусу НКТ
-    r_to: float = 0.038                 # м
-    r_wb: float = 0.108                 # м
-    cp_fluid: float = 2100.0            # Дж/(кг*К)
+    t_surface_c: float = 8.0
+    geothermal_grad: float = 0.033
+    k_earth: float = 2.5
+    alpha_earth: float = 1.0e-6
+    u_to: float = 15.0
+    r_to: float = 0.038
+    r_wb: float = 0.108
+    cp_fluid: float = 2100.0
     production_days: float = 365.0
 
 
 def ramey_time_function(tp: ThermalParams) -> float:
-    """Безразмерная функция времени f(t) в модели Ramey.
-
-        f(t) = -ln[ r_wb / (2*sqrt(alpha*t)) ] - 0.290,   t_D > 100
-
-    Константа 0.290 подтверждена независимо (Hasan & Kabir 1991).
-    """
     t_s = tp.production_days * 86400.0
     t_d = tp.alpha_earth * t_s / tp.r_wb ** 2
     if t_d <= 1.5:
-        # ранний период: логарифмическое приближение неустойчиво
         return max(2.0 * math.sqrt(t_d / math.pi) * (1.0 - 0.3 * math.sqrt(t_d)),
                    1e-3)
     return -math.log(tp.r_wb / (2.0 * math.sqrt(tp.alpha_earth * t_s))) - 0.290
 
 
 def ramey_relaxation_length(w_kg_s: float, tp: ThermalParams) -> float:
-    """Релаксационная длина A, м.
-
-        A = w*cp*[k_e + r_to*U_to*f(t)] / (2*pi*r_to*U_to*k_e)
-    """
     if w_kg_s <= 0:
         return 1e-6
     f_t = ramey_time_function(tp)
@@ -125,21 +92,8 @@ def temperature_profile(
     tp: ThermalParams,
     n_nodes: int = 60,
 ) -> tuple[list[float], list[float], str | None]:
-    """Профиль температуры потока T(z), C.  Ramey (1962).
-
-    Вывод (y -- расстояние вверх от забоя, T_e(y) = T_fbh - g*y):
-
-        A * dT_f/dy + T_f = T_e(y)
-        T_f(y) = T_e(y) + g*A*(1 - exp(-y/A))
-
-    То есть поток ВСЕГДА горячее вмещающих пород на g*A*(1-exp(-y/A)):
-    он не успевает остыть до породы, поднимаясь. На забое (y=0)
-    превышение нулевое, у устья стремится к пределу g*A.
-
-    Возвращает (глубины сверху вниз, температуры, предупреждение).
-    """
     l_total = geom.depth_m
-    # массовый расход
+
     rho_o = fluid.gamma_oil * 1000.0
     rho_w = brine_density(60.0, fluid.salinity_ppm)
     w = (rate.q_oil_m3d * rho_o + rate.q_water_m3d * rho_w) / 86400.0
@@ -151,9 +105,9 @@ def temperature_profile(
     depths, temps = [], []
     for i in range(n_nodes + 1):
         z = l_total * i / n_nodes
-        t_ei = t_es + g_grad * z           # температура пород на глубине z
-        y = l_total - z                    # путь, пройденный потоком вверх
-        expo = max(-y / max(a, 1e-6), -700.0)   # защита от underflow
+        t_ei = t_es + g_grad * z
+        y = l_total - z
+        expo = max(-y / max(a, 1e-6), -700.0)
         t_f = t_ei + g_grad * a * (1.0 - math.exp(expo))
         depths.append(z)
         temps.append(t_f)
@@ -168,30 +122,21 @@ def temperature_profile(
         )
     return depths, temps, warn
 
-
-# --------------------------------------------------------------------------
-# Beggs & Brill (1973)
-# --------------------------------------------------------------------------
-
-# Коэффициенты горизонтального holdup: режим -> (a, b, c)
 _HOLDUP_COEF = {
     "segregated": (0.980, 0.4846, 0.0868),
     "intermittent": (0.845, 0.5351, 0.0173),
     "distributed": (1.065, 0.5824, 0.0609),
 }
 
-# Коэффициенты поправки на наклон: режим -> (d, e, f, g)
-# Внимание: в downhill f = 0.1244, а не -0.3692 -- частая ошибка реализаций.
 _INCL_COEF_UP = {
     "segregated": (0.011, -3.768, 3.539, -1.614),
     "intermittent": (2.96, 0.305, -0.4473, 0.0978),
-    "distributed": None,  # C = 0
+    "distributed": None,
 }
 _INCL_COEF_DOWN = (4.70, -0.3692, 0.1244, -0.5056)
 
 
 def _flow_regime(lam_l: float, n_fr: float) -> str:
-    """Определение режима течения по карте Beggs-Brill."""
     lam = max(lam_l, 1e-9)
     l1 = 316.0 * lam ** 0.302
     l2 = 0.0009252 * lam ** (-2.4684)
@@ -215,7 +160,6 @@ def _holdup_horizontal(regime: str, lam_l: float, n_fr: float) -> float:
 
 def _incl_correction(regime: str, lam_l: float, n_lv: float, n_fr: float,
                      theta: float) -> float:
-    """Множитель psi для поправки holdup на угол наклона."""
     if theta >= 0:
         coef = _INCL_COEF_UP.get(regime)
         if coef is None:
@@ -234,7 +178,6 @@ def _incl_correction(regime: str, lam_l: float, n_lv: float, n_fr: float,
 
 
 def _friction_factor_moody(re: float, rel_rough: float) -> float:
-    """Коэффициент трения Муди. Ламинарный / Colebrook через Haaland."""
     if re < 2000.0:
         return 64.0 / max(re, 1e-3)
     inv = -1.8 * math.log10((rel_rough / 3.7) ** 1.11 + 6.9 / max(re, 1e-3))
@@ -242,12 +185,11 @@ def _friction_factor_moody(re: float, rel_rough: float) -> float:
 
 
 def _two_phase_friction(f_n: float, lam_l: float, h_l: float) -> float:
-    """Двухфазный коэффициент трения через множитель exp(S)."""
     y = max(lam_l, 1e-9) / max(h_l, 1e-9) ** 2
     if abs(y - 1.0) < 1e-9:
         return f_n
     if 1.0 < y < 1.2:
-        s = math.log(2.2 * y - 1.2)  # обход сингулярности
+        s = math.log(2.2 * y - 1.2)
     else:
         ln_y = math.log(max(y, 1e-9))
         den = -0.0523 + 3.182 * ln_y - 0.8725 * ln_y ** 2 + 0.01853 * ln_y ** 4
@@ -266,11 +208,6 @@ def pressure_profile(
     temps: list[float],
     p_wellhead_pa: float = 1.2e6,
 ) -> list[float]:
-    """Профиль давления от устья к забою, Па.
-
-    Маршевый расчёт сверху вниз по узлам, заданным профилем температуры.
-    Возвращает список давлений, соответствующий depths.
-    """
     n = len(depths)
     pressures = [0.0] * n
     pressures[0] = p_wellhead_pa
@@ -279,7 +216,6 @@ def pressure_profile(
     theta = geom.theta_rad
     rel_rough = geom.roughness_m / geom.tubing_id_m
 
-    # газосодержание при насыщении -- полный ГФ
     rs_max = rate.gor_m3m3
 
     for i in range(1, n):
@@ -287,7 +223,6 @@ def pressure_profile(
         p = pressures[i - 1]
         t = 0.5 * (temps[i] + temps[i - 1])
 
-        # --- PVT в узле ---
         pb = bubble_point_standing(rs_max, fluid.gamma_gas, t, fluid.gamma_oil)
         rs = solution_gor_standing(p, pb, rs_max, fluid.gamma_gas, t,
                                    fluid.gamma_oil)
@@ -299,7 +234,6 @@ def pressure_profile(
         rho_w = brine_density(t, fluid.salinity_ppm)
         rho_g = gas_density(max(p, 1e5), t, fluid.gamma_gas)
 
-        # --- расходы в условиях узла, м3/с ---
         q_o = rate.q_oil_m3d * bo / 86400.0
         q_w = rate.q_water_m3d / 86400.0
         free_gor = max(rs_max - rs, 0.0)
@@ -317,7 +251,6 @@ def pressure_profile(
         v_m = v_sl + v_sg
         lam_l = v_sl / max(v_m, 1e-9)
 
-        # --- свойства жидкой смеси ---
         f_o = q_o / max(q_l, 1e-12)
         rho_l = rho_oil * f_o + rho_w * (1.0 - f_o)
         mu_o = oil_viscosity_beggs_robinson(t, fluid.gamma_oil, rs)
@@ -325,7 +258,6 @@ def pressure_profile(
         mu_l = mu_o * f_o + mu_w * (1.0 - f_o)
         mu_g = gas_viscosity_lge(max(p, 1e5), t, fluid.gamma_gas)
 
-        # --- безразмерные группы ---
         n_fr = v_m ** 2 / (G * geom.tubing_id_m)
         n_lv = 1.938 * v_sl * (rho_l / (G * fluid.surface_tension)) ** 0.25
 
@@ -346,7 +278,6 @@ def pressure_profile(
             h_l = hl0 * _incl_correction(regime, lam_l, n_lv, n_fr, theta)
         h_l = min(max(h_l, lam_l, 1e-6), 1.0)
 
-        # --- градиент давления ---
         rho_s = rho_l * h_l + rho_g * (1.0 - h_l)
         rho_n = rho_l * lam_l + rho_g * (1.0 - lam_l)
         mu_n = mu_l * lam_l + mu_g * (1.0 - lam_l)
@@ -358,7 +289,6 @@ def pressure_profile(
         dp_grav = rho_s * G * math.sin(theta)
         dp_fric = f_tp * rho_n * v_m ** 2 / (2.0 * geom.tubing_id_m)
 
-        # кинетическая составляющая (Ek)
         e_k = rho_s * v_m * v_sg / max(p, 1e5)
         e_k = min(e_k, 0.95)
 

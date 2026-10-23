@@ -1,8 +1,3 @@
-"""Explainable water-cut and injector-influence screening.
-
-The deterministic baseline is intentionally non-causal: without tracers, a calibrated
-reservoir model and labelled history it only ranks possible associations for review.
-"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -20,6 +15,7 @@ DISCLAIMER = ("Инженерная screening-диагностика возмо�
 PRESSURE_UNITS = {"pa", "kpa", "mpa", "bar"}
 ROLES = {"producer", "injector"}
 
+
 class WatercutStorageError(RuntimeError): pass
 class WatercutConflictError(RuntimeError): pass
 class WatercutNotFoundError(LookupError): pass
@@ -30,11 +26,13 @@ def _text(value: Any, name: str) -> str:
     if not value: raise ValueError(f"{name} must be non-empty")
     return value
 
+
 def _timestamp(value: datetime | date | str) -> datetime:
     if isinstance(value, str): value = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if isinstance(value, date) and not isinstance(value, datetime): value = datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
     if value.tzinfo is None or value.utcoffset() is None: value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
 
 def _number(value: Any, name: str, *, nonnegative: bool = False) -> float | None:
     if value is None or value == "": return None
@@ -42,8 +40,10 @@ def _number(value: Any, name: str, *, nonnegative: bool = False) -> float | None
     if not math.isfinite(result) or (nonnegative and result < 0): raise ValueError(f"{name} must be finite" + (" and non-negative" if nonnegative else ""))
     return result
 
+
 def _optional_text(value: Any) -> str | None:
     return None if value is None or str(value).strip() == "" else str(value).strip()
+
 
 @dataclass(frozen=True)
 class WellMetadata:
@@ -72,6 +72,7 @@ class WellMetadata:
         value=asdict(self); value["commissioning_date"]=self.commissioning_date.isoformat() if self.commissioning_date else None; return value
     @classmethod
     def from_dict(cls, value): return cls(**value)
+
 
 @dataclass(frozen=True)
 class ProductionHistory:
@@ -117,6 +118,7 @@ class ProductionHistory:
     @classmethod
     def from_dict(cls,value): return cls(**value)
 
+
 @dataclass(frozen=True)
 class InjectionHistory:
     well: str
@@ -139,6 +141,7 @@ class InjectionHistory:
     @classmethod
     def from_dict(cls,value): return cls(**value)
 
+
 @dataclass(frozen=True)
 class WatercutPolicy:
     version: str = POLICY_VERSION
@@ -149,6 +152,7 @@ class WatercutPolicy:
     max_distance_km: float = 15
     min_link_score: float = .42
     max_lag_days: int = 180
+
 
 @dataclass(frozen=True)
 class OilForecastPoint:
@@ -170,6 +174,7 @@ class WatercutLink:
     injector_latitude: float; injector_longitude: float; producer_latitude: float; producer_longitude: float; bearing_deg: float; label: str
     def to_dict(self): return asdict(self)
 
+
 def haversine_km(lat1,lon1,lat2,lon2):
     if not all(math.isfinite(float(v)) for v in (lat1,lon1,lat2,lon2)): raise ValueError("coordinates must be finite")
     p1,p2=math.radians(lat1),math.radians(lat2); dp=math.radians(lat2-lat1); dl=math.radians(lon2-lon1)
@@ -179,6 +184,7 @@ def bearing_deg(lat1,lon1,lat2,lon2):
     p1,p2=math.radians(lat1),math.radians(lat2); dl=math.radians(lon2-lon1)
     return (math.degrees(math.atan2(math.sin(dl)*math.cos(p2),math.cos(p1)*math.sin(p2)-math.sin(p1)*math.cos(p2)*math.cos(dl)))+360)%360
 
+
 def _median_slope(points, field):
     pairs=[]
     for i,a in enumerate(points):
@@ -187,6 +193,7 @@ def _median_slope(points, field):
             if days>0: pairs.append((getattr(b,field)-getattr(a,field))/days)
     return statistics.median(pairs) if pairs else 0
 
+
 def _same_geology(a,b):
     contributions={}; mismatch=False
     for name in ("field_name","reservoir","zone","layer"):
@@ -194,6 +201,7 @@ def _same_geology(a,b):
         if av and bv: contributions[name]=1.0 if av.casefold()==bv.casefold() else 0.0; mismatch |= name in {"reservoir","zone","layer"} and contributions[name]==0
         else: contributions[name]=.35
     return contributions,mismatch
+
 
 def _injector_candidates(producer, injectors, production, injections, policy):
     result=[]
@@ -218,6 +226,7 @@ def _injector_candidates(producer, injectors, production, injections, policy):
         reasons=(f"геодезическое расстояние {distance:.2f} км", "общая геология учтена без отождествления разных пластов", "корреляция не вычисляется при малой истории")
         result.append(InjectorCandidate(injector.well,round(score,4),round(distance,3),lag,confidence,{k:round(v,4) for k,v in parts.items()},reasons))
     return tuple(sorted(result,key=lambda x:(-x.score,x.injector.casefold())))
+
 
 def diagnose_watercut(metadata, production_history, injector_metadata=(), injection_history=(), *, policy=None):
     policy=policy or WatercutPolicy()
@@ -256,6 +265,7 @@ def diagnose_watercut(metadata, production_history, injector_metadata=(), inject
     window=(rows[max(0,policy.baseline_points-1)].timestamp.date().isoformat(),onset.date().isoformat()) if onset else None
     return WatercutDiagnosis(metadata.well,"screening",severity,round(current,6),round(change,6),round(relative,6),round(slope,8),onset.date().isoformat() if onset else None,window,confidence,round(quality,3),tuple(reasons),tuple(missing),tuple(forecasts),round(loss,3) if loss is not None else None,candidates,evidence,alternatives)
 
+
 def build_watercut_links(metadata, production, injections, *, policy=None, top_n=50):
     policy=policy or WatercutPolicy(); producers=[x for x in metadata if x.role=="producer"]; injectors=[x for x in metadata if x.role=="injector"]
     links={}
@@ -267,6 +277,7 @@ def build_watercut_links(metadata, production, injections, *, policy=None, top_n
             key=(i.well.casefold(),p.well.casefold())
             links[key]=WatercutLink(i.well,p.well,candidate.score,diagnosis.severity,candidate.distance_km,candidate.lag_days,candidate.confidence,i.latitude,i.longitude,p.latitude,p.longitude,round(bearing_deg(i.latitude,i.longitude,p.latitude,p.longitude),2),f"{i.well} → возможное влияние → {p.well}")
     return tuple(sorted(links.values(),key=lambda x:(-x.score,x.injector,x.producer))[:top_n])
+
 
 class WatercutRepository:
     _locks={}; _guard=threading.Lock()
@@ -319,6 +330,7 @@ class WatercutRepository:
     def list_metadata(self,role=None): return [x for x in self._read()["metadata"] if role is None or x.role==role]
     def list_production(self,well=None): return [x for x in self._read()["production"] if well is None or x.well.casefold()==well.casefold()]
     def list_injection(self,well=None): return [x for x in self._read()["injection"] if well is None or x.well.casefold()==well.casefold()]
+
 
 def _csv(rows,fields):
     out=io.StringIO(); writer=csv.DictWriter(out,fieldnames=fields,lineterminator="\n"); writer.writeheader()

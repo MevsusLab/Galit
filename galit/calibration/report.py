@@ -1,4 +1,3 @@
-"""JSON and Markdown evaluation reports."""
 from __future__ import annotations
 import json
 from pathlib import Path
@@ -24,6 +23,7 @@ def evaluate_parameter_set(params:ParameterSet,dataset:HistoryDataset,rows:list[
     report["metrics"]["events"]=classification_metrics("events",[r.get("event_label") for r in raw],[None]*len(raw))
     report["metrics"]["risk_ranking"]=ranking_metrics([r.get("risk_label") for r in raw],[None]*len(raw))
     return report
+
 
 def write_report(report:dict[str,Any],json_path:str|Path,markdown_path:str|Path)->None:
     Path(json_path).write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")

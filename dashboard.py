@@ -1,22 +1,3 @@
-"""ГАЛИТ | Дашборд диагностики осложнений добычи (Streamlit).
-
-Enterprise-интерфейс для инженеров и мастеров добычи:
-  * загрузка фонда скважин из Excel/CSV;
-  * ранжирование по интегральному риску с цветовой индикацией
-    (норма / повышенный / критический);
-  * интерактивные профили T(z) и P(z) (Plotly);
-  * детальный разбор по каждой скважине.
-
-Запуск:
-    streamlit run dashboard.py
-
-Формат входного файла -- см. шаблон «Скачать шаблон XLSX» в боковой панели.
-Неизвестные столбцы игнорируются; необязательные столбцы при отсутствии
-принимают значения по умолчанию ядра galit.
-
-Дизайн -- корпоративный стиль «Белоруснефти»: белый фон, тёмно-зелёные
-акценты, тёмно-серый текст, без декоративных элементов.
-"""
 from __future__ import annotations
 
 import base64
@@ -60,22 +41,15 @@ from galit import (
     generate_master_plan,
 )
 
-# ==========================================================================
-# Корпоративная палитра «Белоруснефть»
-# ==========================================================================
+GREEN_900 = "#0B4A2F"
+GREEN_700 = "#0F6B43"
+GREEN_500 = "#3D8B66"
+GREEN_100 = "#E4F0EA"
+INK = "#1F2422"
+INK_MUTED = "#5A6560"
+BORDER = "#D6DED9"
+SURFACE = "#F6F8F7"
 
-GREEN_900 = "#0B4A2F"   # тёмно-зелёный: заголовки, акцентные надписи
-GREEN_700 = "#0F6B43"   # основной зелёный: кнопки, линии графиков
-GREEN_500 = "#3D8B66"   # промежуточный
-GREEN_100 = "#E4F0EA"   # светлый тинт: панели, разделители
-INK = "#1F2422"         # основной текст (тёмно-серый, почти чёрный)
-INK_MUTED = "#5A6560"   # вторичный текст
-BORDER = "#D6DED9"      # границы панелей
-SURFACE = "#F6F8F7"     # фон панелей
-
-# Индикация статуса: норма / повышенный / критический.
-# Тёплая шкала (янтарь -> красный) взята с референсного макета; каждая пара
-# «подложка + акцент» проверена на WCAG в tests/test_dashboard.py.
 STATUS_OK_BG = "#E9F4EC"
 STATUS_OK = "#246B2A"
 STATUS_WARN_BG = "#FDF3E0"
@@ -83,23 +57,20 @@ STATUS_WARN = "#9A4A00"
 STATUS_CRIT_BG = "#FCE9E6"
 STATUS_CRIT = "#B02020"
 
-# Промежуточный «высокий» тон шкалы: чипы и левые акценты карточек.
 STATUS_HIGH_BG = "#FDEEE6"
 STATUS_HIGH = "#C2410C"
 
-RISK_WARN = 0.35   # ниже -- норма
-RISK_CRIT = 0.60   # выше -- критический
+RISK_WARN = 0.35
+RISK_CRIT = 0.60
 
-# Нейтральная основа поверхностей: почти белый лист, как на референсе.
-CANVAS = "#FFFFFF"          # плоскость карточек
-HAIRLINE = "#E7EBE8"        # legacy palette value for non-CSS compatibility
+CANVAS = "#FFFFFF"
+HAIRLINE = "#E7EBE8"
 HAIRLINE_SOFT = "rgba(31, 36, 34, 0.06)"
 HAIRLINE_FAINT = "rgba(31, 36, 34, 0.04)"
 SHADOW_SOFT = "0 1px 2px rgba(16, 40, 30, 0.04), 0 8px 24px rgba(16, 40, 30, 0.07)"
 SHADOW_RAISED = "0 2px 4px rgba(16, 40, 30, 0.05), 0 14px 34px rgba(16, 40, 30, 0.10)"
-RADIUS = "14px"             # крупный радиус скругления с макета
+RADIUS = "14px"
 
-# Последовательность цветов линий профилей (зелёная гамма + графитовый)
 LINE_COLORS = ["#0F6B43", "#0B4A2F", "#3D8B66", "#6FA98C", "#275D57", "#5A6560"]
 
 MECH_RU = {
@@ -131,7 +102,6 @@ FONT_FACES = (
 
 
 def local_asset_data_uri(path: Path) -> str:
-    """Return a data URI for a repository-local UI asset."""
     mime_types = {
         ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
         ".svg": "image/svg+xml", ".woff2": "font/woff2",
@@ -145,12 +115,10 @@ def local_asset_data_uri(path: Path) -> str:
 
 
 def local_image_data_uri(path: Path) -> str:
-    """Backward-compatible image asset helper."""
     return local_asset_data_uri(path)
 
 
 def font_face_css(font_dir: Path = FONT_DIR) -> str:
-    """Build local variable-font declarations for the supported unicode ranges."""
     declarations: list[str] = []
     for family, file_name, unicode_range in FONT_FACES:
         uri = local_asset_data_uri(font_dir / file_name)
@@ -167,7 +135,6 @@ def font_face_css(font_dir: Path = FONT_DIR) -> str:
 
 
 def lucide_icon(name: str, size: int = 17) -> str:
-    """Return sanitized inline markup from a vendored Lucide icon."""
     try:
         markup = (ICON_DIR / f"{name}.svg").read_text(encoding="utf-8")
     except OSError:
@@ -191,13 +158,11 @@ def lucide_icon(name: str, size: int = 17) -> str:
 
 
 def icon_span(name: str, size: int = 17) -> str:
-    """Wrap a Lucide icon for consistent inline alignment."""
     icon = lucide_icon(name, size)
     return f'<span class="gx-icon-wrap">{icon}</span>' if icon else ""
 
 
 def lucide_data_uri(name: str, stroke: str = "currentColor") -> str:
-    """Return a recolored vendored Lucide icon as an SVG data URI."""
     markup = lucide_icon(name)
     if not markup:
         return ""
@@ -207,13 +172,7 @@ def lucide_data_uri(name: str, stroke: str = "currentColor") -> str:
 
 
 def background_data_uri(path: Path = BACKGROUND_ASSET) -> str:
-    """Return the repository-local dashboard background as a data URI."""
     return local_image_data_uri(path)
-
-
-# ==========================================================================
-# Схема входного файла
-# ==========================================================================
 
 ION_KEYS = ["Na", "Cl", "Ca", "Mg", "K", "Ba", "Sr", "Fe", "HCO3", "SO4", "CO3"]
 
@@ -226,14 +185,12 @@ COMPATIBILITY_MINERAL_RU = {
 COMPATIBILITY_META_COLUMNS = ["name", "ph", "t_c", "p_pa"]
 COMPATIBILITY_COLUMNS = COMPATIBILITY_META_COLUMNS + ION_KEYS
 
-# Колонки, обязательные для расчёта
 REQUIRED_COLUMNS = [
     "name", "depth_m", "tubing_id_m",
     "q_oil_m3d", "q_water_m3d", "gor_m3m3",
     "wat_stock_tank_c",
 ]
 
-# Необязательные числовые колонки и их значения по умолчанию (из ядра galit)
 OPTIONAL_DEFAULTS: dict[str, float | str] = {
     "inclination_deg": 0.0,
     "gamma_oil": 0.86,
@@ -255,7 +212,6 @@ OPTIONAL_DEFAULTS: dict[str, float | str] = {
 
 LOCATION_COLUMNS = ("latitude", "longitude", "cluster", "site")
 
-# Синонимы заголовков (нормализуются: нижний регистр, без пробелов)
 HEADER_ALIASES = {
     "name": "name", "well": "name", "well_name": "name",
     "скважина": "name", "название": "name",
@@ -265,9 +221,6 @@ HEADER_ALIASES = {
     "куст": "cluster", "участок": "site", "площадка": "site",
 }
 
-# Типовой солевой состав пластовой воды Припятского прогиба (мг/л).
-# Используется, когда ионный состав в файле не задан: на профили T(z)/P(z)
-# и глубину АСПО он не влияет, влияет только на блок солеотложений.
 TYPICAL_BRINE: dict[str, float] = {
     "Na": 95_000.0, "Cl": 205_000.0, "Ca": 28_000.0, "Mg": 3_100.0,
     "K": 1_800.0, "HCO3": 130.0, "SO4": 250.0,
@@ -304,10 +257,6 @@ COLUMN_DOCS = [
     ("p_wellhead_pa", "Па", "Буферное давление", "нет", "1.2·10^6"),
 ]
 
-# ==========================================================================
-# Страница и корпоративный CSS
-# ==========================================================================
-
 st.set_page_config(
     page_title="ГАЛИТ — диагностика осложнений",
     page_icon=FAVICON_ASSET,
@@ -317,7 +266,6 @@ st.set_page_config(
 
 
 def inject_css() -> None:
-    """Apply the corporate theme with local fonts and repository assets."""
     background_uri = background_data_uri()
     background_layer = (
         f"url('{background_uri}') center / cover fixed no-repeat"
@@ -805,16 +753,10 @@ def inject_css() -> None:
         """,
     )
 
-
 inject_css()
-
-# ==========================================================================
-# Чтение и разбор входного файла (чистые функции -- тестируются pytest)
-# ==========================================================================
 
 
 def normalize_headers(columns: Any) -> dict[str, str]:
-    """Отображение «нормализованный заголовок -> каноническое имя»."""
     canonical = (
         {c.lower(): c for c in REQUIRED_COLUMNS}
         | {c.lower(): c for c in OPTIONAL_DEFAULTS}
@@ -831,11 +773,6 @@ def normalize_headers(columns: Any) -> dict[str, str]:
 
 
 def frame_to_cases(df: pd.DataFrame) -> tuple[list[WellCase], list[str]]:
-    """Преобразование строк таблицы в WellCase.
-
-    Возвращает (успешные случаи, список сообщений об ошибках/заменах).
-    Ошибка в одной строке не блокирует расчёт остальных.
-    """
     errors: list[str] = []
     colmap = normalize_headers(df.columns)
     by_canon: dict[str, str] = {}
@@ -983,7 +920,6 @@ def _row_to_case(label: str, vals: dict[str, float | str],
 
 
 def template_frame() -> pd.DataFrame:
-    """Одна строка-пример с полным набором колонок (скв. Речицкая 123)."""
     example = {
         "name": "Речицкая 123",
         "latitude": 52.371, "longitude": 30.387,
@@ -1004,7 +940,6 @@ def template_frame() -> pd.DataFrame:
 
 
 def template_bytes() -> bytes:
-    """Шаблон XLSX: лист с данными + лист «Инструкция»."""
     docs = pd.DataFrame(
         COLUMN_DOCS, columns=["Колонка", "Ед. изм.", "Описание", "Обязательна", "По умолчанию"]
     )
@@ -1016,7 +951,6 @@ def template_bytes() -> bytes:
 
 
 def compatibility_template_frame() -> pd.DataFrame:
-    """Пустой двухстрочный контракт; химия намеренно не подставляется."""
     return pd.DataFrame([
         {"name": "Вода A", "ph": pd.NA, "t_c": pd.NA, "p_pa": pd.NA,
          **{ion: pd.NA for ion in ION_KEYS}},
@@ -1026,7 +960,6 @@ def compatibility_template_frame() -> pd.DataFrame:
 
 
 def compatibility_template_bytes() -> bytes:
-    """XLSX-шаблон именно для двух измеренных анализов воды."""
     instructions = pd.DataFrame([
         {"Поле": "name", "Единица": "—", "Описание": "Название воды; обязательно"},
         {"Поле": "ph", "Единица": "—", "Описание": "Измеренный pH, 0…14; обязательно"},
@@ -1042,7 +975,6 @@ def compatibility_template_bytes() -> bytes:
 
 
 def compatibility_waters_from_frame(df: pd.DataFrame) -> tuple[galit.CompatibilityWater, galit.CompatibilityWater]:
-    """Строго преобразовать ровно две строки без типовой/синтетической химии."""
     if len(df) != 2:
         raise ValueError("нужны ровно две строки: вода A и вода B")
     missing = [column for column in COMPATIBILITY_META_COLUMNS if column not in df.columns]
@@ -1076,7 +1008,6 @@ def compatibility_waters_from_frame(df: pd.DataFrame) -> tuple[galit.Compatibili
 
 
 def compatibility_profile_from_frame(df: pd.DataFrame) -> tuple[galit.ProfilePoint, ...]:
-    """Преобразовать измеренный профиль; пустые строки игнорируются."""
     points = []
     for index, (_, row) in enumerate(df.iterrows(), start=1):
         values = [row.get("depth_m"), row.get("t_c"), row.get("p_pa")]
@@ -1091,7 +1022,6 @@ def compatibility_profile_from_frame(df: pd.DataFrame) -> tuple[galit.ProfilePoi
 
 def compatibility_curve_from_frame(product: str, mineral: str, reference: str,
                                    validated: bool, df: pd.DataFrame) -> galit.DoseResponseCurve:
-    """Создать кривую только после явного подтверждения лабораторной валидации."""
     if not validated:
         raise ValueError("подтвердите, что кривая валидирована лабораторией для этих вод и условий")
     points = []
@@ -1107,7 +1037,6 @@ def compatibility_curve_from_frame(product: str, mineral: str, reference: str,
 
 
 def compatibility_ratio_frame(result: galit.CompatibilityResult) -> pd.DataFrame:
-    """Плоские данные четырёх SI для таблицы и Plotly."""
     return pd.DataFrame([{
         "Доля воды B, %": row.fraction_b * 100,
         "A:B": row.ratio_a_to_b,
@@ -1118,7 +1047,6 @@ def compatibility_ratio_frame(result: galit.CompatibilityResult) -> pd.DataFrame
 
 
 def fig_compatibility_ratios(result: galit.CompatibilityResult) -> go.Figure:
-    """SI по доле B: четыре минерала и явная линия равновесия SI=0."""
     frame = compatibility_ratio_frame(result)
     colors = [GREEN_700, "#6D4C41", "#C47F00", "#546E7A"]
     fig = go.Figure()
@@ -1142,7 +1070,6 @@ def fig_compatibility_ratios(result: galit.CompatibilityResult) -> go.Figure:
 
 
 def pilot_template_bytes() -> bytes:
-    """XLSX contract for prospective outcomes and three frozen strategies."""
     columns = [row["field"] for row in pilot_contract_frame()]
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -1152,7 +1079,6 @@ def pilot_template_bytes() -> bytes:
 
 
 def pilot_evaluation_frame(evaluation: dict[str, Any]) -> pd.DataFrame:
-    """Compact dashboard table without relabeling illustrative output as accuracy."""
     rows = []
     for item in evaluation.get("strategies", []):
         rows.append({
@@ -1166,11 +1092,6 @@ def pilot_evaluation_frame(evaluation: dict[str, Any]) -> pd.DataFrame:
 
 
 def _normalize_csv_decimals(df: pd.DataFrame) -> pd.DataFrame:
-    """Запятая как десятичный разделитель в числовых колонках CSV.
-
-    Файлы, сохранённые из русского Excel, содержат «0,062» вместо «0.062».
-    Текстовые колонки (названия скважин) остаются нетронутыми.
-    """
     name_columns = {
         original for original, canonical in normalize_headers(df.columns).items()
         if canonical == "name"
@@ -1178,7 +1099,7 @@ def _normalize_csv_decimals(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.columns:
         if str(col) in name_columns:
             continue
-        # pandas 2 даёт строкам object, pandas 3 -- специализированный str
+
         if df[col].dtype == object or pd.api.types.is_string_dtype(df[col]):
             converted = pd.to_numeric(
                 df[col].astype(str).str.replace(",", ".", regex=False),
@@ -1190,7 +1111,6 @@ def _normalize_csv_decimals(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _well_label(value: Any, row_number: int) -> str:
-    """Стабильная подпись: числовой идентификатор 139 не становится 139.0."""
     if pd.isna(value):
         return f"строка {row_number}"
     if isinstance(value, (int, float)) and float(value).is_integer():
@@ -1200,7 +1120,6 @@ def _well_label(value: Any, row_number: int) -> str:
 
 @st.cache_data(show_spinner=False)
 def read_table(data: bytes, file_name: str) -> pd.DataFrame:
-    """Чтение XLSX/CSV. CSV -- с автоопределением разделителя и кодировки."""
     if file_name.lower().endswith((".xls", ".xlsx")):
         return pd.read_excel(io.BytesIO(data))
     try:
@@ -1213,7 +1132,6 @@ def read_table(data: bytes, file_name: str) -> pd.DataFrame:
 
 
 def load_artifact_bytes(data: bytes) -> ParameterSet:
-    """Strict dashboard helper; uploaded bytes are parsed without filesystem paths."""
     import json
     raw = json.loads(data.decode("utf-8"), parse_constant=lambda value: (_ for _ in ()).throw(
         ArtifactValidationError(f"Non-finite JSON value {value} is forbidden")
@@ -1261,7 +1179,6 @@ def demo_fund() -> list[DiagnosisResult]:
 
 
 def build_master_plan(cases_by_name: dict[str, WellCase], results: list[DiagnosisResult]):
-    """Связать result→case по нормализованному имени без молчаливой потери строк."""
     normalised_cases: dict[str, WellCase] = {}
     for case in cases_by_name.values():
         key = " ".join(case.name.strip().casefold().split())
@@ -1278,8 +1195,8 @@ def build_master_plan(cases_by_name: dict[str, WellCase], results: list[Diagnosi
         diagnosed.append(DiagnosedWell(case, result))
     return generate_master_plan(diagnosed)
 
+
 def master_plan_frame(plan: Any) -> pd.DataFrame:
-    """Русская плоская таблица плана для UI и CSV без дублирования правил."""
     return pd.DataFrame([{
         "Скважина": task.well,
         "Осложнение": task.dominant_label,
@@ -1293,11 +1210,6 @@ def master_plan_frame(plan: Any) -> pd.DataFrame:
 
 def master_plan_csv(plan: Any) -> bytes:
     return master_plan_frame(plan).to_csv(index=False).encode("utf-8-sig")
-
-
-# ==========================================================================
-# Доверие, объяснимость и безопасное применение (чистые функции)
-# ==========================================================================
 
 FIELD_RU = {
     "geometry.depth_m": "глубина скважины",
@@ -1335,7 +1247,6 @@ GROUP_RU = {
 
 
 def contribution_frame(result: DiagnosisResult) -> pd.DataFrame:
-    """Разложение интегрального риска без повторения физического расчёта."""
     rows = []
     total = result.integrated_risk
     for mechanism in ("halite", "calcite", "wax", "corrosion"):
@@ -1353,7 +1264,6 @@ def contribution_frame(result: DiagnosisResult) -> pd.DataFrame:
 
 
 def provenance_groups(result: DiagnosisResult) -> dict[str, Any]:
-    """Подготовить происхождение ключевых входов и критичные пробелы."""
     quality = result.quality
     missing = set(quality.missing_fields)
     rows = []
@@ -1382,7 +1292,6 @@ def provenance_groups(result: DiagnosisResult) -> dict[str, Any]:
 
 
 def categorize_warnings(warnings: list[str]) -> dict[str, list[str]]:
-    """Сгруппировать предупреждения, сохранив исходные строки без изменений."""
     categories: dict[str, list[str]] = {}
     for warning in warnings:
         text = warning.lower()
@@ -1399,7 +1308,6 @@ def categorize_warnings(warnings: list[str]) -> dict[str, list[str]]:
 
 
 def decision_trace(result: DiagnosisResult) -> dict[str, Any]:
-    """Краткая трассировка от доминирующего механизма к безопасному next step."""
     active = [MECH_RU[key] for key, value in result.severity.items() if value >= RISK_WARN]
     recommendation = result.recommendation
     conflict = "не выявлен"
@@ -1432,7 +1340,6 @@ def corrosion_counterfactual(
     *,
     production_mode: bool = False,
 ) -> dict[str, Any]:
-    """Повторный diagnose для сценария ингибирования; исходный case не изменяется."""
     if not 0.0 <= efficiency <= 1.0:
         return {"supported": False, "reason": "Эффективность должна быть в диапазоне 0–1."}
     sources = dict(case.provenance.sources)
@@ -1470,7 +1377,6 @@ def action_is_safe(result: DiagnosisResult) -> tuple[bool, str]:
 
 
 def empty_results_status(parsed_count: int, production_mode: bool) -> tuple[str, str]:
-    """Классифицировать пустой результат без смешения parsing и quality gate."""
     if parsed_count > 0 and production_mode:
         return (
             "quality_gate",
@@ -1483,20 +1389,13 @@ def empty_results_status(parsed_count: int, production_mode: bool) -> tuple[str,
 
 
 def render_file_remarks(errors: list[str]) -> None:
-    """Показать замечания до любого раннего выхода из main."""
     if errors:
         with st.expander(f"Замечания при разборе и контроле качества ({len(errors)})"):
             for error in errors:
                 st.markdown(f"- {error}")
 
 
-# ==========================================================================
-# Таблица ранжирования с условным форматированием
-# ==========================================================================
-
-
 def risk_status(risk: float) -> tuple[str, str, str]:
-    """(фон строки, цвет текста, метка) по уровню интегрального риска."""
     if risk >= RISK_CRIT:
         return STATUS_CRIT_BG, STATUS_CRIT, "критический"
     if risk >= RISK_WARN:
@@ -1505,7 +1404,6 @@ def risk_status(risk: float) -> tuple[str, str, str]:
 
 
 def rank_frame(results: list[DiagnosisResult]) -> pd.DataFrame:
-    """Рейтинговая таблица фонда (сортировка по убыванию риска)."""
     rows = []
     for r in sorted(results, key=lambda x: x.integrated_risk, reverse=True):
         risk_range = None
@@ -1538,8 +1436,6 @@ def rank_frame(results: list[DiagnosisResult]) -> pd.DataFrame:
 
 
 def style_rank(df: pd.DataFrame) -> Styler:
-    """Заливка строк по статусу; ячейка «Риск» — индикатор-плашка."""
-
     def row_paint(row: pd.Series) -> list[str]:
         bg, fg, _ = risk_status(float(row["Риск"]))
         styles = [f"background-color: {bg}; color: {INK}" for _ in df.columns]
@@ -1563,11 +1459,6 @@ def style_rank(df: pd.DataFrame) -> Styler:
     )
 
 
-# ==========================================================================
-# Графики (Plotly)
-# ==========================================================================
-
-
 def _style_axes(fig: go.Figure) -> None:
     fig.update_layout(
         font=dict(family=FONT_FAMILY, size=13, color=INK),
@@ -1586,7 +1477,6 @@ def _style_axes(fig: go.Figure) -> None:
 
 def fig_profiles(results: list[DiagnosisResult], labels: list[str],
                  detail: DiagnosisResult | None = None) -> go.Figure:
-    """Профили T(z) и P(z) [МПа] по выбранным скважинам, глубина -- вниз."""
     by_label = dict(result_labels(results))
     fig = make_subplots(
         rows=1, cols=2, horizontal_spacing=0.12,
@@ -1614,7 +1504,6 @@ def fig_profiles(results: list[DiagnosisResult], labels: list[str],
             hovertemplate="P = %{x:.2f} МПа · z = %{y:.0f} м",
         ), row=1, col=2)
 
-    # В детальном разборе: кривая WAT(P) и отметка глубины начала АСПО
     if detail is not None:
         fig.add_trace(go.Scatter(
             x=detail.wat_profile, y=detail.depths, mode="lines",
@@ -1637,13 +1526,11 @@ def fig_profiles(results: list[DiagnosisResult], labels: list[str],
 
 
 def fig_hybrid_wellbore(result: galit.HybridProfileResult) -> go.Figure:
-    """Визуализация гибридного цифрового двойника: Физика vs Датчики vs ML."""
     fig = make_subplots(
         rows=1, cols=2, horizontal_spacing=0.12,
         subplot_titles=("Температура T(z), °C", "Давление P(z), МПа"),
     )
 
-    # 1. Температура
     fig.add_trace(go.Scatter(
         x=result.temps_physics, y=result.depths, mode="lines",
         name="Теория Ramey (1962)",
@@ -1688,7 +1575,6 @@ def fig_hybrid_wellbore(result: galit.HybridProfileResult) -> go.Figure:
             annotation_position="top left", row=1, col=1,
         )
 
-    # 2. Давление
     fig.add_trace(go.Scatter(
         x=[p / 1e6 for p in result.pressures_physics], y=result.depths, mode="lines",
         name="Теория Beggs-Brill (1973)",
@@ -1722,7 +1608,6 @@ def fig_hybrid_wellbore(result: galit.HybridProfileResult) -> go.Figure:
     fig.update_layout(height=480, margin=dict(l=20, r=20, t=40, b=20))
     return fig
 
-
 FORECAST_HISTORY_COLUMNS = (
     "well", "timestamp", "wax_severity", "halite_severity", "calcite_severity",
     "corrosion_wall_loss_mm", "oil_rate_m3_day", "quality", "source", "regime_id",
@@ -1730,7 +1615,6 @@ FORECAST_HISTORY_COLUMNS = (
 
 
 def forecast_history_from_csv(data: bytes) -> galit.ForecastHistory:
-    """Parse documented temporal CSV; timestamps must carry an explicit timezone."""
     frame = pd.read_csv(io.BytesIO(data))
     missing = {"well", "timestamp"} - set(frame.columns)
     if missing:
@@ -1754,7 +1638,6 @@ def forecast_history_from_csv(data: bytes) -> galit.ForecastHistory:
 
 
 def fig_forecast_timeline(forecast: galit.WellForecast, *, calendar: bool = True) -> go.Figure:
-    """Render honest range bars only for events with a computed temporal window."""
     dated = [event for event in forecast.events if event.horizon_start_days is not None]
     fig = go.Figure()
     for event in dated:
@@ -1804,7 +1687,6 @@ def forecast_event_frame(events: list[galit.ForecastEvent] | tuple[galit.Forecas
 
 
 def parse_optional_nonnegative(raw: str, label: str) -> float | None:
-    """Parse an optional dashboard economic input without inventing a default."""
     text = raw.strip().replace(",", ".")
     if not text:
         return None
@@ -1819,7 +1701,6 @@ def parse_optional_nonnegative(raw: str, label: str) -> float | None:
 
 def scenario_for_dashboard(case: WellCase, changes: galit.ScenarioChanges,
                            economics: galit.ScenarioEconomics | None = None) -> galit.ScenarioComparison:
-    """Pure adapter used by the scenario tab and unit tests."""
     return galit.compare_scenario(case, changes, economics)
 
 
@@ -1829,7 +1710,6 @@ def risk_economics_for_dashboard(case: WellCase, *, probability: float | None,
                                  price: float | None, operating_loss: float | None,
                                  treatment_cost: float | None, currency: str | None,
                                  loss_fraction: float = 1.0) -> galit.RiskEconomicsResult:
-    """Pure adapter shared by Streamlit rendering and tests."""
     return galit.calculate_risk_economics(galit.RiskEconomicsInput(
         event_probability=probability, horizon_days=horizon_days,
         treatment_efficiency=efficiency, event_downtime_days=event_downtime_days,
@@ -1844,20 +1724,15 @@ def risk_economics_for_dashboard(case: WellCase, *, probability: float | None,
 
 def field_map_data(cases_by_name: dict[str, WellCase],
                    results: list[DiagnosisResult]) -> galit.FieldMapData:
-    """Pair current cases/results and delegate all map semantics to the core."""
     items = [DiagnosedWell(cases_by_name[result.well], result)
              for result in results if result.well in cases_by_name]
     return galit.prepare_field_map(items)
 
-
-# Ориентировочная зона Припятского прогиба: около 280 x 150 км, NW-SE.
-# Это визуальный региональный контекст, а не лицензионная геологическая граница.
 PRIPYAT_OVERVIEW_LON = (27.05, 27.45, 28.65, 29.95, 31.25, 31.30, 30.25, 28.90, 27.70, 27.05)
 PRIPYAT_OVERVIEW_LAT = (52.18, 52.73, 52.78, 52.57, 52.35, 51.65, 51.32, 51.43, 51.76, 52.18)
 
 
 def field_map_viewport(data: galit.FieldMapData) -> tuple[dict[str, float], float]:
-    """Return a stable wells-only viewport; never let a tiny spread or outlier show the world."""
     latitudes = [point.latitude for point in data.points]
     longitudes = [point.longitude for point in data.points]
     if not latitudes:
@@ -1870,14 +1745,13 @@ def field_map_viewport(data: galit.FieldMapData) -> tuple[dict[str, float], floa
     lon_span = max(lon_max - lon_min, 0.04)
     latitude_scale = max(math.cos(math.radians(center["lat"])), 0.2)
     effective_span = max(lat_span, lon_span * latitude_scale)
-    # 1.9 supplies padding; clamps retain local detail and prevent a world view.
+
     zoom = math.log2(180.0 / (effective_span * 1.9)) - 1.0
     return center, max(6.0, min(10.5, zoom))
 
 
 def smart_map_service(items: list[DiagnosedWell] | None = None,
                       occurred_at: datetime | None = None) -> galit.SmartMapService:
-    """Combine the current diagnosis slice with persisted history, without copying sources."""
     configured = Path(os.environ.get("GALIT_SMART_MAP_STORAGE", "data/smart_map.json"))
     path = configured if configured.is_absolute() else PROJECT_ROOT / configured
     observations = []
@@ -1892,7 +1766,6 @@ def smart_map_service(items: list[DiagnosedWell] | None = None,
 def fig_smart_map(snapshot: dict[str, Any], *, infrastructure: dict[str, Any] | None = None,
                   hotspots: list[dict[str, Any]] | None = None, frames: list[dict[str, Any]] | None = None,
                   show_heatmap: bool = True, show_markers: bool = True) -> go.Figure:
-    """Plotly 6.9 token-free Densitymap + Scattermap with persistent base layers."""
     points = snapshot.get("points", [])
     dummy = galit.FieldMapData((), galit.FieldMapSummary(0, 0, 0, 0, 0, {}, None))
     if points:
@@ -1951,7 +1824,6 @@ def fig_smart_map(snapshot: dict[str, Any], *, infrastructure: dict[str, Any] | 
 
 
 def fig_field_map(data: galit.FieldMapData) -> go.Figure:
-    """Interactive token-free OSM tile map with risk semantics and regional context."""
     center, zoom = field_map_viewport(data)
     fig = go.Figure()
 
@@ -1999,7 +1871,6 @@ def fig_field_map(data: galit.FieldMapData) -> go.Figure:
 
 
 def fig_fund_risk(results: list[DiagnosisResult]) -> go.Figure:
-    """Compact overview chart built only from the current diagnosis results."""
     ordered = sorted(results, key=lambda item: item.integrated_risk, reverse=True)[:12]
     colors = [risk_status(item.integrated_risk)[1] for item in ordered]
     fig = go.Figure(go.Bar(
@@ -2022,7 +1893,6 @@ def fig_fund_risk(results: list[DiagnosisResult]) -> go.Figure:
 
 
 def fig_risk_overview(results: list[DiagnosisResult]) -> go.Figure:
-    """Two-line current-fund profile; it deliberately does not pretend to be history."""
     ordered = sorted(results, key=lambda item: item.integrated_risk, reverse=True)
     risks = [item.integrated_risk for item in ordered]
     running_average = [sum(risks[:index]) / index for index in range(1, len(risks) + 1)]
@@ -2053,7 +1923,6 @@ def fig_risk_overview(results: list[DiagnosisResult]) -> go.Figure:
 
 
 def fig_mechanism_mix(results: list[DiagnosisResult]) -> go.Figure:
-    """Dominant-mechanism structure for the current fund, without inferred history."""
     counts = {mechanism: 0 for mechanism in MECH_RU}
     for result in results:
         counts[result.dominant] = counts.get(result.dominant, 0) + 1
@@ -2076,7 +1945,6 @@ def fig_mechanism_mix(results: list[DiagnosisResult]) -> go.Figure:
 
 
 def overview_alerts(results: list[DiagnosisResult]) -> list[dict[str, str]]:
-    """Return current-state alerts; deliberately contains no invented timestamps."""
     alerts: list[dict[str, str]] = []
     for result in sorted(results, key=lambda item: item.integrated_risk, reverse=True):
         if result.integrated_risk >= RISK_CRIT:
@@ -2096,7 +1964,6 @@ def overview_alerts(results: list[DiagnosisResult]) -> list[dict[str, str]]:
 
 
 def fig_severity(detail: DiagnosisResult) -> go.Figure:
-    """Вклад механизмов в риск по одной скважине."""
     mechanisms = ["halite", "calcite", "wax", "corrosion"]
     values = [detail.severity[m] for m in mechanisms]
     colors = [
@@ -2123,13 +1990,7 @@ def fig_severity(detail: DiagnosisResult) -> go.Figure:
     return fig
 
 
-# ==========================================================================
-# Компоновка интерфейса
-# ==========================================================================
-
-
 def render_header() -> None:
-    """Reference-inspired page header without inventing dates or field metadata."""
     context_icon = icon_span("layers")
     location_icon = icon_span("map-pin")
     date_chevron = icon_span("chevron-down")
@@ -2189,7 +2050,6 @@ def render_welcome() -> None:
 
 
 def render_sidebar():
-    """Боковая панель; возвращает файл и флаг промышленного режима."""
     upload = None
     production_mode = False
     with st.sidebar:
@@ -2402,10 +2262,6 @@ def render_watercut(repository: galit.WatercutRepository) -> None:
 
 
 def result_labels(results: list[DiagnosisResult]) -> list[tuple[str, DiagnosisResult]]:
-    """Пары (уникальная подпись, результат) в порядке убывания риска.
-
-    При совпадении имён скважин подписи получают суффикс « (2)», « (3)»…
-    """
     pairs: list[tuple[str, DiagnosisResult]] = []
     used: set[str] = set()
     for r in sorted(results, key=lambda x: x.integrated_risk, reverse=True):
@@ -2424,13 +2280,11 @@ def unique_labels(results: list[DiagnosisResult]) -> list[str]:
 
 
 def treatment_storage_path() -> Path:
-    """Resolve the configured journal path relative to the project, not process CWD."""
     configured = Path(os.environ.get("GALIT_TREATMENT_STORAGE", "data/treatments.json"))
     return configured if configured.is_absolute() else PROJECT_ROOT / configured
 
 
 def get_treatment_repository() -> galit.TreatmentRepository:
-    """Return one repository per configured path for the current Streamlit session."""
     path = str(treatment_storage_path().resolve())
     cached = st.session_state.get("treatment_repository")
     if cached is None or str(cached.path.resolve()) != path:
@@ -2554,12 +2408,10 @@ def render_well_passport(repository: galit.PassportRepository,
 
 
 def ensure_utc(value: datetime) -> datetime:
-    """Normalize Streamlit datetime values to the repository's aware UTC contract."""
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
 def equipment_portfolio_frame(rows: list[galit.EquipmentForecast]) -> pd.DataFrame:
-    """Stable table for equipment priorities, safe with partial/unavailable forecasts."""
     return pd.DataFrame([{
         "Скважина": row.well, "Тип": row.lift_type,
         "Baseline-риск": row.baseline_failure_risk, "Уровень": row.risk_level,
@@ -2635,9 +2487,6 @@ def render_equipment_forecasts(repository: galit.EquipmentRepository, results: l
     elif len(trend) == 1:
         st.info("Доступен один snapshot: тренды не рассчитываются, confidence снижен.")
 
-    # -----------------------------------------------------------------------
-    # ML Anomaly Detection (Isolation Forest)
-    # -----------------------------------------------------------------------
     try:
         anom_report = repository.detect_anomalies(selected)
     except Exception as anom_exc:
@@ -2662,7 +2511,6 @@ def render_equipment_forecasts(repository: galit.EquipmentRepository, results: l
             dom_name = galit.ANOMALY_FEATURE_LABELS.get(anom_report.dominant_anomaly_feature or "", anom_report.dominant_anomaly_feature or "—")
             m4.metric("Ведущий канал сбоя", dom_name)
 
-            # Physical Synergy explanation
             diag = next((r for r in (results or []) if r.well == selected), None)
             dom_feat = anom_report.dominant_anomaly_feature
             if diag:
@@ -2702,7 +2550,6 @@ def render_equipment_forecasts(repository: galit.EquipmentRepository, results: l
                     f"{galit.ANOMALY_PHYSICS_HINTS.get(dom_feat, 'Отклонение канала от базового профиля работы скважины.')}"
                 )
 
-            # Interactive Plotly chart with highlighted anomaly points
             if raw_telemetry and len(anom_report.points) == len(raw_telemetry):
                 st.markdown("##### Детализация аномалий на графике телеметрии")
                 feature_options = [f for f in ["current_a", "intake_pressure", "discharge_pressure", "motor_temperature_c", "vibration_mm_s", "rod_load_kn"]
@@ -2711,7 +2558,7 @@ def render_equipment_forecasts(repository: galit.EquipmentRepository, results: l
                     ch = st.selectbox("Канал для анализа аномалий:", feature_options,
                                       format_func=lambda k: galit.ANOMALY_FEATURE_LABELS.get(k, k),
                                       key="anom_feature_select")
-                    
+
                     df_chart = pd.DataFrame([{
                         "timestamp": sn.timestamp,
                         "value": getattr(sn, ch, None),
@@ -2723,7 +2570,7 @@ def render_equipment_forecasts(repository: galit.EquipmentRepository, results: l
 
                     if not df_chart.empty:
                         fig = go.Figure()
-                        # Normal line
+
                         fig.add_trace(go.Scatter(
                             x=df_chart["timestamp"],
                             y=df_chart["value"],
@@ -2732,7 +2579,7 @@ def render_equipment_forecasts(repository: galit.EquipmentRepository, results: l
                             line=dict(color="#0F6B43", width=2),
                             marker=dict(size=5, color="#0F6B43"),
                         ))
-                        # Anomaly markers
+
                         anom_df = df_chart[df_chart["is_anomaly"]]
                         if not anom_df.empty:
                             fig.add_trace(go.Scatter(
@@ -2759,7 +2606,6 @@ def render_equipment_forecasts(repository: galit.EquipmentRepository, results: l
 
 def treatment_well_context(cases_by_name: dict[str, WellCase],
                            results: list[DiagnosisResult]) -> dict[str, dict[str, Any]]:
-    """Build safe autofill context from the current calculated fund."""
     diagnosed = {item.well: item for item in results}
     context: dict[str, dict[str, Any]] = {}
     for name, case in cases_by_name.items():
@@ -2777,7 +2623,6 @@ def treatment_well_context(cases_by_name: dict[str, WellCase],
 
 def treatment_history_frame(records: list[galit.TreatmentRecord],
                             currency: str | None = None) -> pd.DataFrame:
-    """Build an audit-friendly history table without mixing currencies."""
     rows = []
     for item in records:
         if currency and item.currency != currency:
@@ -2800,7 +2645,6 @@ def treatment_history_frame(records: list[galit.TreatmentRecord],
 
 
 def treatment_summary_frame(summary: dict[str, Any]) -> pd.DataFrame:
-    """Flatten assessed-only summary and keep every currency in a separate row."""
     rows: list[dict[str, Any]] = []
     for group in summary.get("groups", []):
         costs = group.get("costs_by_currency", {})
@@ -2832,7 +2676,6 @@ def _journal_error(exc: Exception) -> None:
 
 def render_treatment_journal(repository: galit.TreatmentRepository,
                              well_context: dict[str, dict[str, Any]]) -> None:
-    """Create, progress, assess, archive, filter and aggregate journal records."""
     st.subheader("Журнал мероприятий и фактического эффекта")
     st.caption("План и факт разделены. В KPI и A/B входят только assessed-записи.")
     try:
@@ -3057,7 +2900,6 @@ def equipment_storage_path() -> Path:
 
 
 class DashboardFundTwinAdapter:
-    """Expose loaded fund identities without persisting or inventing timeline events."""
     def __init__(self, cases: list[WellCase]):
         self.cases = tuple(cases)
 
@@ -3070,7 +2912,6 @@ class DashboardFundTwinAdapter:
 
 
 def get_twin_components(cases: list[WellCase] | None = None) -> tuple[galit.DigitalTwinService, galit.ManualEventRepository]:
-    """Build the aggregate from configured repositories and the loaded fund."""
     manual = galit.ManualEventRepository(twin_storage_path())
     service = galit.build_default_service(
         watercut=get_watercut_repository(),
@@ -3085,12 +2926,10 @@ def get_twin_components(cases: list[WellCase] | None = None) -> tuple[galit.Digi
 
 
 def twin_timeline_categories() -> list[str]:
-    """Stable category order shared by the filter and regression tests."""
     return [category.value for category in galit.EventCategory]
 
 
 def fig_twin_timeline(items: list[dict[str, Any]]) -> go.Figure:
-    """Compact, deterministic timeline chart; annotations never contain raw HTML."""
     colors = {"production": GREEN_700, "watercut": "#1665A5", "repair": STATUS_WARN,
               "equipment_failure": STATUS_CRIT, "equipment_telemetry": GREEN_500,
               "treatment": "#7C3AED", "laboratory": "#0E7490", "complication": STATUS_HIGH,
@@ -3172,7 +3011,6 @@ def render_digital_twin(service: galit.DigitalTwinService,
 
 
 def _compatibility_note(text: str) -> str:
-    """Перевести фиксированные пояснения ядра, не меняя их смысл."""
     translations = {
         "conservative-volume linear ion mixing": "линейное смешение ионов при сохранении объёма",
         "pH mixed from hydrogen-ion activities without buffering/speciation": "pH смешивается по активности H⁺ без учёта буферности и полного химического равновесия",
@@ -3188,7 +3026,6 @@ def _compatibility_note(text: str) -> str:
 
 
 def render_compatibility_result(result: galit.CompatibilityResult) -> None:
-    """Показать инженерный screening совместимости понятными блоками."""
     dangerous = "—" if result.dangerous_fraction_b is None else f"{result.dangerous_fraction_b:.0%} воды B"
     c1, c2, c3 = st.columns(3)
     c1.metric("Наиболее опасная смесь", dangerous)
@@ -3255,7 +3092,6 @@ def render_compatibility_result(result: galit.CompatibilityResult) -> None:
 
 
 def render_compatibility_section() -> None:
-    """Независимый additive-раздел: не использует и не меняет файл фонда."""
     with st.expander("Совместимость двух вод", expanded=False):
         st.markdown("### Проверка совместимости двух измеренных вод")
         st.info("Введите только лабораторные данные. Типовой или синтетический состав здесь никогда не подставляется; пустой ион означает «нет данных», а не ноль.")
@@ -3344,11 +3180,6 @@ def render_compatibility_section() -> None:
         if result is not None:
             render_compatibility_result(result)
 
-
-# ==========================================================================
-# Feature 9: реагенты и склад (независимый evidence-gated контур)
-# ==========================================================================
-
 CHEMICAL_HAZARD_RU = {
     "halite": "Галит", "calcite": "Кальцит", "wax": "АСПО",
     "corrosion": "Коррозия", "barite": "Барит", "gypsum": "Гипс",
@@ -3356,7 +3187,6 @@ CHEMICAL_HAZARD_RU = {
 
 
 def chemical_storage_path() -> Path:
-    """Storage is explicit and independent from diagnosis/treatment repositories."""
     return Path(os.environ.get("GALIT_CHEMICAL_STORAGE", PROJECT_ROOT / "data" / "chemicals.json"))
 
 
@@ -3365,7 +3195,6 @@ def get_chemical_repository() -> galit.ChemicalRepository:
 
 
 def _chemical_number(value: Any, digits: int = 3) -> str:
-    """Format a domain decimal without turning missing values into zero."""
     if value is None:
         return "не определено"
     number = Decimal(str(value))
@@ -3375,7 +3204,6 @@ def _chemical_number(value: Any, digits: int = 3) -> str:
 
 def chemical_catalog_frame(products: list[galit.ChemicalProduct],
                            envelopes: list[galit.ChemicalDoseResponseEnvelope]) -> pd.DataFrame:
-    """Pure catalog adapter; validation status comes only from stored evidence."""
     evidence = {product.id: [item for item in envelopes if item.product_id == product.id]
                 for product in products}
     return pd.DataFrame([{
@@ -3392,7 +3220,6 @@ def chemical_catalog_frame(products: list[galit.ChemicalProduct],
 
 
 def chemical_points_from_frame(frame: pd.DataFrame) -> tuple[galit.ChemicalDoseResponsePoint, ...]:
-    """Strict import adapter: every row is an explicit tested dose and outcome."""
     aliases = {str(column).strip().lower(): column for column in frame.columns}
     dose_column = aliases.get("dose_kg_m3") or aliases.get("dose_mg_l")
     effective_column = aliases.get("effective")
@@ -3421,7 +3248,6 @@ def chemical_candidate_rows(products: list[galit.ChemicalProduct],
                             envelopes: list[galit.ChemicalDoseResponseEnvelope],
                             hazards: list[str], treated_m3_day: Any,
                             oil_m3_day: Any) -> list[dict[str, Any]]:
-    """Explain every active candidate, including rejected products and missing data."""
     wanted = tuple(sorted({str(item).strip().lower() for item in hazards if str(item).strip()}))
     recommendations = {
         item.product_id: item for item in galit.recommend_products(
@@ -3474,7 +3300,6 @@ def chemical_candidate_rows(products: list[galit.ChemicalProduct],
 
 
 def chemical_inventory_frame(repository: galit.ChemicalRepository, *, as_of: date) -> pd.DataFrame:
-    """Pure projection over append-only ledger: physical, reserved, available, expiry."""
     transactions = repository.list_transactions()
     reservations = repository.list_reservations()
     rows = []
@@ -3495,7 +3320,6 @@ def chemical_inventory_frame(repository: galit.ChemicalRepository, *, as_of: dat
 
 def chemical_consumption_history(transactions: list[galit.StockTransaction],
                                  product_id: str) -> list[tuple[date, Decimal]]:
-    """Aggregate immutable consumption entries by UTC calendar day."""
     totals: dict[date, Decimal] = {}
     for item in transactions:
         if item.product_id == product_id and item.kind == "consumption":
@@ -3543,7 +3367,6 @@ def _chemical_ui_error(exc: Exception) -> None:
 
 
 def render_chemicals_section() -> None:
-    """Independent novice-friendly UI; it never creates efficacy evidence implicitly."""
     with st.expander("Реагенты и склад", expanded=False):
         st.caption(f"Хранилище: {chemical_storage_path()} · данные эффективности добавляются только явно.")
         try:
@@ -3793,11 +3616,10 @@ def render_chemicals_section() -> None:
 def main() -> None:
     upload, production_mode, include_uncertainty = render_sidebar()
     render_header()
-    # Независимые additive-разделы доступны даже без файла фонда и не меняют legacy upload.
+
     render_compatibility_section()
     render_chemicals_section()
 
-    # --- источник данных ---
     results: list[DiagnosisResult] | None = None
     errors: list[str] = []
     cases_by_name: dict[str, WellCase] = {}
@@ -3833,7 +3655,6 @@ def main() -> None:
     treatment_repository = get_treatment_repository()
     passport_repository = get_passport_repository()
 
-    # --- постоянная маркировка назначения результата ---
     all_ready = all(r.quality.production_ready for r in results)
     if source_is_demo:
         st.error(
@@ -3848,15 +3669,13 @@ def main() -> None:
     else:
         st.success("PRODUCTION-READY по критериям качества входов ядра GALIT.")
 
-    # --- доменный план мастера для отдельной вкладки ---
     plan = None
     plan_error: str | None = None
     try:
         plan = build_master_plan(cases_by_name, results)
-    except Exception as exc:  # UI boundary: the other diagnostic tabs must remain usable.
+    except Exception as exc:
         plan_error = str(exc)
 
-    # --- ключевые показатели фонда ---
     risks = [r.integrated_risk for r in results]
     crit = sum(1 for r in risks if r >= RISK_CRIT)
     elevated = sum(1 for r in risks if RISK_WARN <= r < RISK_CRIT)
@@ -3870,7 +3689,6 @@ def main() -> None:
     kpi4.metric("Средний риск фонда", f"{sum(risks) / len(risks):.2f}",
                 help=f"Чаще всего лидирует: {dominant_counts.index[0]}")
 
-    # --- reference dashboard: center analytics plus a dedicated right alerts rail ---
     overview_main, overview_alerts_col = st.columns([3.35, 1], gap="large")
     with overview_main:
         st.markdown(f'<div class="panel-title">{icon_span("chart-column")}Динамика риска по текущему фонду '
@@ -3940,7 +3758,6 @@ def main() -> None:
          "Цифровой паспорт", "Цифровой двойник", "Журнал мероприятий"]
     )
 
-    # --- первая вкладка: тот же уже сформированный доменный план ---
     with tab_plan:
         if plan is None:
             st.error(
@@ -3977,7 +3794,6 @@ def main() -> None:
             if task.quality_warnings:
                 st.warning("Предупреждения качества: " + "; ".join(task.quality_warnings))
 
-    # --- Умная карта 2.0: текущий срез + явная история/GIS без подмены источников ---
     with tab_map:
         diagnosed = [DiagnosedWell(cases_by_name[x.well], x) for x in results if x.well in cases_by_name]
         service = smart_map_service(diagnosed)
@@ -4030,7 +3846,6 @@ def main() -> None:
     with tab_watercut:
         render_watercut(get_watercut_repository())
 
-    # --- вкладка 1: рейтинг ---
     with tab_rank:
         st.markdown(
             f'<span class="legend-chip"><span class="legend-dot" '
@@ -4045,7 +3860,6 @@ def main() -> None:
                      height=32 * (len(results) + 1))
         render_file_remarks(errors)
 
-    # --- вкладка 2: профили ---
     with tab_profiles:
         labels = unique_labels(results)
         top = labels[:5]
@@ -4060,9 +3874,6 @@ def main() -> None:
         else:
             st.info("Выберите хотя бы одну скважину.")
 
-        # -----------------------------------------------------------------------
-        # Раздел 2.2: Гибридный цифровой двойник ствола (Physics + ML Residual)
-        # -----------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### 🔬 Гибридный цифровой двойник ствола (Physics-Informed Residual Learning)")
         st.caption("Связка аналитической термогидродинамики Рэмея / Беггса-Брилла и машинного обучения невязок по датчикам устья и ТМС. Устраняет расхождение теории с промыслом и корректирует глубину отложений АСПО.")
@@ -4141,7 +3952,6 @@ def main() -> None:
 
             st.plotly_chart(fig_hybrid_wellbore(hybrid_res), width="stretch", config={"displaylogo": False})
 
-    # --- вкладка 3: детальный разбор ---
     with tab_well:
         pairs = dict(result_labels(results))
         label = st.selectbox("Скважина", list(pairs), key="sb_well")
@@ -4237,7 +4047,6 @@ def main() -> None:
                 for warning in detail.warnings:
                     st.code(warning, language=None)
 
-    # --- полноценный сценарный конструктор ---
     with tab_scenario:
         st.markdown("### Конструктор «Что будет, если?»")
         st.caption("Изменения дебита, давления и температуры идут в существующее ядро. Для промывки, режима и дозировки нужны явные эффекты; скрытых коэффициентов нет.")
@@ -4312,7 +4121,6 @@ def main() -> None:
         except ValueError as exc:
             st.error(f"Сценарий не рассчитан: {exc}")
 
-    # --- экономика риска: только явные денежные входы ---
     with tab_economics:
         st.markdown("### Экономика риска по скважине")
         st.caption("Пустые денежные поля не заменяются примерными ставками: результат будет partial/unavailable.")
@@ -4379,7 +4187,6 @@ def main() -> None:
         except ValueError as exc:
             st.error(f"Экономика риска не рассчитана: {exc}")
 
-    # --- прогноз: временной контракт отделён от snapshot-диагностики ---
     with tab_forecast:
         st.warning("SCREENING: временные окна — сценарии, не гарантированные даты или вероятности отказа.")
         forecast_well_name = st.selectbox("Скважина для прогноза", list(cases_by_name),
@@ -4441,7 +4248,6 @@ def main() -> None:
             st.code(",".join(FORECAST_HISTORY_COLUMNS), language=None)
             st.caption("timestamp: ISO 8601 с timezone; severity 0..1; wall loss/rate ≥ 0; quality good/questionable/bad; source measured/derived/laboratory.")
 
-    # --- вкладка 4: outcomes-based pilot, отдельно от recommendations ---
     with tab_pilot:
         st.warning("SHADOW MODE · эта вкладка не создаёт production recommendation.")
         st.markdown(
@@ -4486,14 +4292,13 @@ def main() -> None:
         try:
             twin_service, manual_events = get_twin_components(list(cases_by_name.values()))
             render_digital_twin(twin_service, manual_events)
-        except Exception as exc: 
+        except Exception as exc:
             st.error(f"Цифровой двойник временно недоступен: {html.escape(str(exc))}")
 
     with tab_journal:
         render_treatment_journal(
             treatment_repository, treatment_well_context(cases_by_name, results)
         )
-
 
 if __name__ == "__main__":
     main()

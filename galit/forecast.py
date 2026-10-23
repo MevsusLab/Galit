@@ -1,10 +1,3 @@
-"""Honest, deterministic time-to-event forecasts for GALIT.
-
-This module deliberately separates a current physical diagnosis from a temporal
-forecast.  A severity score is not a failure probability and, without repeated
-observations, it is not a clock.  Screening results are scenario estimates;
-``calibrated`` is gated by explicit holdout evidence.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -41,13 +34,6 @@ class LikelihoodCategory(str, Enum):
 
 @dataclass(frozen=True)
 class ForecastSnapshot:
-    """One leakage-safe, pre-event observation of a well.
-
-    All rates are daily field observations. Severity fields use GALIT's public
-    0..1 scale. ``corrosion_wall_loss_mm`` is a cumulative measured wall loss,
-    not the modelled instantaneous corrosion rate.
-    """
-
     well: str
     timestamp: datetime
     wax_severity: float | None = None
@@ -79,8 +65,6 @@ class ForecastSnapshot:
 
 @dataclass(frozen=True)
 class ObservedForecastEvent:
-    """Observed outcome contract for later calibration/evaluation."""
-
     event_id: str
     well: str
     timestamp: datetime
@@ -98,8 +82,6 @@ class ObservedForecastEvent:
 
 @dataclass(frozen=True)
 class ForecastHistory:
-    """Typed temporal input; snapshots and outcomes remain separate."""
-
     snapshots: tuple[ForecastSnapshot, ...] = ()
     events: tuple[ObservedForecastEvent, ...] = ()
     dataset_id: str | None = None
@@ -111,8 +93,6 @@ class ForecastHistory:
 
 @dataclass(frozen=True)
 class CorrosionIntegrityInput:
-    """Measured wall reserve used by the corrosion screening scenario."""
-
     current_wall_thickness_mm: float
     minimum_allowable_wall_thickness_mm: float
     measured_at: datetime
@@ -136,12 +116,6 @@ class CorrosionIntegrityInput:
 
 @dataclass(frozen=True)
 class ForecastCalibrationEvidence:
-    """Evidence gate for calibrated labels and optional supplied probabilities.
-
-    This is an evaluation artifact contract, not a fitted model. Probabilities
-    are consumed only when explicitly supplied by the validated artifact.
-    """
-
     artifact_id: str
     dataset_id: str
     validation_status: str
@@ -183,8 +157,6 @@ class ForecastCalibrationEvidence:
 
 @dataclass(frozen=True)
 class TemporalEvidence:
-    """Machine-readable evidence behind a temporal estimate (additive contract)."""
-
     points: int = 0
     span_days: float | None = None
     trend_consistency: float | None = None
@@ -328,7 +300,6 @@ class _Trend:
     regime_id: str | None = None
     limitations: tuple[str, ...] = ()
 
-
 _TITLES = {
     ForecastMechanism.WAX: "Wax critical / АСПО",
     ForecastMechanism.CORROSION: "Corrosion threshold exceedance",
@@ -355,7 +326,6 @@ def forecast_well(
     corrosion_integrity: CorrosionIntegrityInput | None = None,
     calibration: ForecastCalibrationEvidence | None = None,
 ) -> WellForecast:
-    """Build five honest event contracts without changing diagnostic physics."""
     cfg = config or ForecastConfig()
     if diagnosis.well != case.name:
         raise ValueError("diagnosis.well and case.name must match")
@@ -768,7 +738,6 @@ def _quantile(values: Sequence[float], q: float) -> float:
         return ordered[low]
     fraction = position-low
     return ordered[low]*(1-fraction)+ordered[high]*fraction
-
 
 __all__ = [
     "CorrosionIntegrityInput", "ForecastCalibrationEvidence", "ForecastConfig",

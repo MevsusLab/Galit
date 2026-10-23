@@ -1,24 +1,3 @@
-"""Интегрированная оценка риска осложнений и подбор технологии.
-
-Это ядро продукта: не четыре разрозненные модели, а единая шкала,
-на которой галит, кальцит, АСПО и коррозия сравниваются между собой
-и конкурируют за ограниченный бюджет обработок.
-
-Почему интеграция важна, а не косметика:
-  * механизмы КОНКУРИРУЮТ за одну и ту же операцию (одна поездка
-    бригады, один простой скважины) -- значит их надо ранжировать
-    на общей шкале, иначе четыре модели дадут четыре несравнимых
-    "риска 0.7";
-  * механизмы ВЗАИМОДЕЙСТВУЮТ: отложения солей и АСПО сужают
-    проходное сечение -> растёт скорость потока -> растёт
-    массоперенос -> ускоряется CO2-коррозия. Обратно: плёнка FeCO3
-    защищает от коррозии, но её разрушают скребки;
-  * технология борьбы с одним механизмом может усугубить другой
-    (например, кислотная обработка от карбонатов повышает коррозию).
-
-Ни одного исследования, покрывающего все четыре механизма сразу,
-в открытой литературе не существует -- это и есть незанятая ниша.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -58,14 +37,11 @@ from .fluids import (
     solution_gor_standing,
 )
 
-
 MECHANISMS = ("halite", "calcite", "wax", "corrosion")
 
 
 @dataclass(frozen=True)
 class RiskPolicy:
-    """Версионированная политика интегрального риска."""
-
     policy_id: str = "galit-baseline"
     version: str = "1.0"
     weights: Mapping[str, float] = field(default_factory=lambda: {
@@ -100,16 +76,13 @@ class RiskPolicy:
             raise ValueError("RiskPolicy требует непустые policy_id и version")
         object.__setattr__(self, "weights", MappingProxyType(weights))
 
-
 DEFAULT_RISK_POLICY = RiskPolicy()
-# Legacy alias: прежние ключи/значения доступны, но случайная мутация запрещена.
+
 MECHANISM_WEIGHTS = DEFAULT_RISK_POLICY.weights
 
 
 @dataclass(frozen=True)
 class RuntimeCalibration:
-    """Validated, immutable runtime overrides supported by the current model."""
-
     calibration_id: str = "baseline"
     artifact_version: str = "baseline"
     validation_status: str = "baseline"
@@ -128,14 +101,11 @@ class RuntimeCalibration:
         if not self.calibration_id or not self.artifact_version:
             raise ValueError("RuntimeCalibration requires id and artifact version")
 
-
 BASELINE_CALIBRATION = RuntimeCalibration()
 
 
 @dataclass(frozen=True)
 class UncertaintyConfig:
-    """Настройки воспроизводимого сценарного ensemble (не калибровка)."""
-
     seed: int = 0
     samples: int = 100
     relative_range: float = 0.05
@@ -176,8 +146,6 @@ class UncertaintyResult:
     probability_of_deposition: float = 0.0
     warnings: list[str] = field(default_factory=list)
 
-# Поля, влияющие на промышленное решение по каждому механизму. Группы
-# намеренно заданы в терминах публичной модели WellCase.
 CRITICAL_FIELDS = {
     "wellbore": {
         "geometry.depth_m", "geometry.tubing_id_m",
@@ -197,8 +165,6 @@ VALID_SOURCES = {"measured", "derived", "default", "synthetic"}
 
 
 class DataQualityError(ValueError):
-    """Недостаточно фактических данных для промышленного прогноза."""
-
     def __init__(self, reasons: list[str]):
         self.reasons = list(reasons)
         super().__init__("Промышленный расчёт отклонён: " + "; ".join(self.reasons))
@@ -206,12 +172,6 @@ class DataQualityError(ValueError):
 
 @dataclass
 class DataProvenance:
-    """Происхождение входов; пустая карта сохраняет legacy-поведение.
-
-    Для старых конструкторов явно переданные значения считаются measured.
-    Загрузчики, которые сами подставляют данные, обязаны записывать source.
-    """
-
     sources: dict[str, str] = field(default_factory=dict)
     missing_fields: list[str] = field(default_factory=list)
     defaulted_fields: list[str] = field(default_factory=list)
@@ -235,8 +195,6 @@ class DataProvenance:
 
 @dataclass
 class DataQuality:
-    """Итоговая совместимая оценка полноты и пригодности данных."""
-
     sources: dict[str, str] = field(default_factory=dict)
     missing_fields: list[str] = field(default_factory=list)
     defaulted_fields: list[str] = field(default_factory=list)
@@ -248,7 +206,6 @@ class DataQuality:
 
 
 def assess_quality(provenance: DataProvenance) -> DataQuality:
-    """Оценить качество без изменения численного расчёта."""
     scores = {"measured": 1.0, "derived": 0.8, "default": 0.5, "synthetic": 0.25}
     missing = set(provenance.missing_fields)
     completeness = sum(
@@ -286,7 +243,6 @@ def assess_quality(provenance: DataProvenance) -> DataQuality:
 
 @dataclass
 class WellCase:
-    """Полное описание скважины для расчёта."""
     name: str
     geometry: WellGeometry
     rate: ProductionRate
@@ -296,10 +252,9 @@ class WellCase:
     wax: WaxProperties
     co2_mol_frac: float = 0.02
     inhibitor_efficiency: float = 0.0
-    lift_type: str = "ЭЦН"          # ЭЦН | ШГН | фонтан
+    lift_type: str = "ЭЦН"
     p_wellhead_pa: float = 1.2e6
-    # Keep provenance in its legacy positional slot. Location metadata is
-    # deliberately appended so older positional WellCase calls remain valid.
+
     provenance: DataProvenance = field(default_factory=DataProvenance)
     latitude: float | None = None
     longitude: float | None = None
@@ -309,7 +264,6 @@ class WellCase:
 
 @dataclass
 class DiagnosisResult:
-    """Результат интегрированной диагностики."""
     well: str
     depths: list[float]
     temps: list[float]
@@ -334,19 +288,12 @@ class DiagnosisResult:
 
 
 def _halite_severity(si: float) -> float:
-    """Нормировка индекса насыщения галита в шкалу 0..1.
-
-    SI < -0.3  -- недосыщение, риска нет
-    SI = 0     -- равновесие, начало кристаллизации
-    SI > 0.3   -- сильное пересыщение
-    """
     if si < -0.3:
         return 0.0
     return min(max((si + 0.3) / 0.6, 0.0), 1.0)
 
 
 def _calcite_severity(sdsi: float) -> float:
-    """Нормировка индекса Стиффа-Дэвиса в шкалу 0..1."""
     if sdsi <= 0.0:
         return 0.0
     return min(sdsi / 1.5, 1.0)
@@ -359,7 +306,6 @@ def diagnose(
     uncertainty: UncertaintyConfig | None = None,
     runtime_calibration: RuntimeCalibration | None = None,
 ) -> DiagnosisResult:
-    """Полный расчёт с локальным immutable runtime config без global leakage."""
     runtime = runtime_calibration or BASELINE_CALIBRATION
     if runtime.validation_status == "blocked":
         raise ValueError("Blocked calibration artifact cannot be applied at runtime")
@@ -381,7 +327,6 @@ def diagnose(
             + "; ".join(quality.reasons)
         )
 
-    # --- 1. профили в стволе ---
     depths, temps, warn_t = temperature_profile(
         case.geometry, case.rate, case.fluid, case.thermal
     )
@@ -393,7 +338,6 @@ def diagnose(
         p_wellhead_pa=case.p_wellhead_pa,
     )
 
-    # --- 2. АСПО ---
     pb = bubble_point_standing(
         case.rate.gor_m3m3, case.fluid.gamma_gas,
         case.thermal.t_surface_c + case.thermal.geothermal_grad * case.geometry.depth_m,
@@ -402,7 +346,6 @@ def diagnose(
     onset, wat_profile = wax_onset_depth(depths, temps, pressures, case.wax, pb)
     sev_wax = wax_deposition_severity(depths, temps, wat_profile, onset, case.wax)
 
-    # --- 3. соли: устье, с явным screening дегазации CO2 ---
     ph_wh, warn_degas = calcite_degas_ph_screening(
         ph_initial=case.water.ph,
         t_c=temps[0],
@@ -433,7 +376,6 @@ def diagnose(
             f"используется Stiff-Davis (ASTM D4582)."
         )
 
-    # --- 4. коррозия: профиль по согласованным узлам depths/T/P ---
     area = 3.14159 * (case.geometry.tubing_id_m / 2.0) ** 2
 
     def corrosion_profile(diameter_m: float) -> list[dict[str, float]]:
@@ -483,7 +425,6 @@ def diagnose(
     corr_label, sev_corr = corrosion_severity(corr["rate_mm_yr"])
     corr["category"] = corr_label
 
-    # --- 5. взаимодействие: сужение применяется ко всему профилю ---
     blockage = max(sev_halite, sev_wax)
     if blockage > 0.3:
         shrink = 1.0 - 0.3 * blockage
@@ -507,7 +448,6 @@ def diagnose(
         "corrosion": sev_corr,
     }
 
-    # --- 6. интегральный риск ---
     integrated = sum(policy.weights[k] * v for k, v in severity.items())
     dominant = max(severity, key=lambda k: severity[k] * policy.weights[k])
 
@@ -559,7 +499,7 @@ def _interval(values: list[float]) -> ScenarioInterval:
 
 def _perturb_case(case: WellCase, rng: random.Random, config: UncertaintyConfig,
                   quality: DataQuality) -> WellCase:
-    # Screening/default/synthetic inputs receive deliberately wider scenario ranges.
+
     quality_factor = 1.0 if quality.production_ready else 1.0 + config.site_relative_range / max(config.relative_range, 1e-12)
 
     def rel(value: float, path: str, floor: float = 0.0) -> float:
@@ -628,11 +568,6 @@ def _estimate_uncertainty(case: WellCase, policy: RiskPolicy,
 def _recommend(dominant: str, severity: dict[str, float],
                onset: float | None, case: WellCase,
                corr: dict[str, float]) -> str:
-    """Подбор технологии из арсенала НГДУ «Речицанефть».
-
-    Учитывает конфликты: скребок разрушает защитную плёнку FeCO3,
-    кислотная обработка усиливает коррозию.
-    """
     sev = severity[dominant]
     if sev < 0.1:
         return "мероприятия не требуются, плановый контроль"
@@ -668,7 +603,6 @@ def _recommend(dominant: str, severity: dict[str, float],
         if case.lift_type == "ШГН":
             parts.append("контроль клапанных пар на эрозионную коррозию")
 
-    # сопутствующие механизмы
     others = [k for k, v in severity.items() if v > 0.35 and k != dominant]
     if others:
         names = {"halite": "галит", "calcite": "кальцит",
@@ -681,12 +615,10 @@ def _recommend(dominant: str, severity: dict[str, float],
 def rank_wells(
     cases: list[WellCase], runtime_calibration: RuntimeCalibration | None = None
 ) -> list[DiagnosisResult]:
-    """Ранжирование фонда с единым immutable runtime config."""
     results = [diagnose(c, runtime_calibration=runtime_calibration) for c in cases]
     return sorted(results, key=lambda r: r.integrated_risk, reverse=True)
 
 
 def water_compatibility(*args, **kwargs):
-    """Additive integrated-core entry point for the separately versioned model."""
     from .compatibility import evaluate_compatibility
     return evaluate_compatibility(*args, **kwargs)

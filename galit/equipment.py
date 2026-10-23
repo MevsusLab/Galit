@@ -1,8 +1,3 @@
-"""Explainable equipment-failure screening for ESP (ЭЦН) and rod pumps (ШГН).
-
-This is a deterministic engineering baseline, not a field-validated ML model.
-All thresholds and weights are explicit so they can later be calibrated or replaced.
-"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -399,11 +394,6 @@ class EquipmentRepository:
                       key=lambda x: (-(x.baseline_failure_risk or -1), x.well.casefold()))
 
     def detect_anomalies(self, well: str, **kwargs):
-        """Run ML anomaly detection on well telemetry (Isolation Forest).
-
-        Trains on the fly on normal operation history -- no failure labels needed.
-        Delegates to galit.anomaly.detect_anomalies.
-        """
         from .anomaly import detect_anomalies as _detect, AnomalyReport
         meta = self.get_equipment(well)
         telemetry = self.list_telemetry(well)
@@ -417,7 +407,6 @@ class EquipmentRepository:
         return _detect(telemetry, meta.lift_type, **kwargs)
 
     def portfolio_anomalies(self) -> dict:
-        """Run ML anomaly detection for the entire equipment portfolio."""
         result = {}
         for meta in self.list_equipment():
             try:
@@ -425,7 +414,6 @@ class EquipmentRepository:
             except (EquipmentNotFoundError, EquipmentStorageError):
                 pass
         return result
-
 
 CSV_COLUMNS = tuple(TelemetrySnapshot.__dataclass_fields__)
 def telemetry_csv_template() -> bytes:

@@ -1,4 +1,3 @@
-"""Регрессионный baseline первой безопасной партии физических исправлений."""
 from __future__ import annotations
 
 import pytest
@@ -36,14 +35,13 @@ def test_wax_no_deposition():
 def test_wax_partial_zone_uses_onset_fraction_from_wellhead():
     depths = [0.0, 500.0, 1000.0]
     temps = [10.0, 20.0, 30.0]
-    wax = WaxProperties(20.06, wax_content_pct=10.0)  # WAT=20 C при 0.1 МПа
+    wax = WaxProperties(20.06, wax_content_pct=10.0)
     onset, wat_profile = wax_onset_depth(
         depths, temps, [1e5] * 3, wax, pb_pa=1e5,
     )
     assert onset == pytest.approx(500.0)
     severity = wax_deposition_severity(depths, temps, wat_profile, onset, wax)
-    # zone_frac=onset/total=0.5; старая инвертированная геометрия давала
-    # тот же результат только в середине, поэтому отдельно фиксируем края ниже.
+
     assert 0.0 < severity < 0.5
 
 
@@ -92,7 +90,7 @@ def _case() -> WellCase:
 def test_diagnosis_regression_contract_and_corrosion_profile():
     result = diagnose(_case())
     corr = result.corrosion
-    # Существующий публичный контракт сохранён.
+
     assert {"rate_mm_yr", "category", "limiting"} <= corr.keys()
     assert len(corr["profile"]) == len(result.depths) == len(result.temps) == len(result.pressures)
     assert corr["rate_mm_yr"] == max(node["rate_mm_yr"] for node in corr["profile"])

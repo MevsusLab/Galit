@@ -1,4 +1,3 @@
-"""Competition demo scenarios must remain honest and reproducible."""
 from dataclasses import replace
 
 import galit.demo_scenarios as scenarios
@@ -67,6 +66,6 @@ def test_inhibitor_counterfactual_is_safe_and_reduces_corrosion():
         after = item.counterfactual.after
         assert 0.0 <= after.severity["corrosion"] <= before.severity["corrosion"] <= 1.0
         assert 0.0 <= after.corrosion["rate_mm_yr"] < before.corrosion["rate_mm_yr"]
-        # The prevention action must not silently change unrelated input physics.
+
         direct = diagnose(replace(item.scenario.case, inhibitor_efficiency=0.90))
         assert after.severity == direct.severity

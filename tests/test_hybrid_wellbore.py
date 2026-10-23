@@ -1,4 +1,3 @@
-"""Unit tests for Hybrid Physics-Informed Wellbore Digital Twin (Residual Learning)."""
 import pytest
 from galit.wellbore import (
     WellGeometry,
@@ -26,7 +25,6 @@ def sample_well_components():
 
 
 def test_hybrid_profiles_no_measurements():
-    """Без замеров гибридный профиль точно равен физическому baseline."""
     geom, rate, fluid, tp, wax = sample_well_components()
     res = calculate_hybrid_profiles("Well-1", geom, rate, fluid, tp, wax, p_wellhead_pa=1.4e6, measurements=None)
 
@@ -34,7 +32,7 @@ def test_hybrid_profiles_no_measurements():
     assert res.well == "Well-1"
     assert res.model_version == MODEL_VERSION
     assert len(res.depths) == 61
-    # Невязка везде нулевая
+
     assert all(abs(dt) < 1e-6 for dt in res.delta_temps)
     assert all(abs(dp) < 1e-6 for dp in res.delta_pressures)
     assert res.temps_hybrid == res.temps_physics
@@ -43,14 +41,11 @@ def test_hybrid_profiles_no_measurements():
 
 
 def test_hybrid_profiles_with_cooling_shifts_wax_onset():
-    """При остывании устья (холодный грунт, парафиновая корка) зона АСПО смещается глубже в ствол."""
     geom, rate, fluid, tp, wax = sample_well_components()
 
-    # Сначала считаем физический baseline
     base = calculate_hybrid_profiles("Well-1", geom, rate, fluid, tp, wax, p_wellhead_pa=1.4e6)
     t_wh_phys = base.temps_physics[0]
 
-    # Реальный замер на устье на 4.5 °C холоднее теории Рэмея
     t_wh_real = round(t_wh_phys - 4.5, 2)
     measurements = [
         WellboreMeasurement(depth_m=0.0, temperature_c=t_wh_real, pressure_pa=1.4e6, sensor_type="surface"),
@@ -59,12 +54,10 @@ def test_hybrid_profiles_with_cooling_shifts_wax_onset():
 
     res = calculate_hybrid_profiles("Well-1", geom, rate, fluid, tp, wax, p_wellhead_pa=1.4e6, measurements=measurements)
 
-    # В точке устья гибридная температура равна реальному замеру
     assert abs(res.temps_hybrid[0] - t_wh_real) < 0.1
-    # Невязка на устье отрицательная (поток холоднее теории)
+
     assert res.delta_temps[0] < -4.0
 
-    # Если АСПО есть, глубина начала отложений АСПО сместилась вглубь ствола
     if base.wax_onset_physics_m is not None:
         assert res.wax_onset_hybrid_m is not None
         assert res.wax_onset_hybrid_m > base.wax_onset_physics_m
@@ -73,7 +66,6 @@ def test_hybrid_profiles_with_cooling_shifts_wax_onset():
 
 
 def test_realistic_measurements_generator():
-    """Генератор синтетических замеров выдает корректные устьевой и забойный сенсоры."""
     meas = generate_realistic_measurements("Well-Test", 3000.0, 8.0, 0.033)
     assert len(meas) == 2
     assert meas[0].depth_m == 0.0
@@ -84,7 +76,6 @@ def test_realistic_measurements_generator():
 
 
 def test_multi_sensor_survey_interpolation():
-    """Три замера с промежуточным глубинным манометром/термометром отрабатывают без ошибок."""
     geom, rate, fluid, tp, wax = sample_well_components()
     measurements = [
         WellboreMeasurement(depth_m=0.0, temperature_c=28.0, pressure_pa=1.4e6),
@@ -93,6 +84,6 @@ def test_multi_sensor_survey_interpolation():
     ]
     res = calculate_hybrid_profiles("Well-Survey", geom, rate, fluid, tp, wax, measurements=measurements)
     assert len(res.temps_hybrid) == len(res.depths)
-    # Проверяем монотонность давления с глубиной
+
     for i in range(1, len(res.pressures_hybrid)):
         assert res.pressures_hybrid[i] >= res.pressures_hybrid[i - 1]

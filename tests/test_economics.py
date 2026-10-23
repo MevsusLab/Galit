@@ -1,4 +1,3 @@
-"""Unit economics and pilot break-even tests."""
 import math
 
 import pytest

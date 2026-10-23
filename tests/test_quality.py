@@ -1,4 +1,3 @@
-"""Качество данных, provenance и промышленный режим."""
 from dataclasses import replace
 
 import pandas as pd

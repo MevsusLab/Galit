@@ -1,8 +1,3 @@
-"""Тесты Telegram-бота: разбор /aspo, сборка кейса, отчёт, подбор обработки.
-
-Сеть не используется -- проверяются чистые функции и консистентность
-с расчётным ядром galit.
-"""
 from __future__ import annotations
 
 import galit
@@ -12,8 +7,6 @@ from galit import diagnose
 
 POSITIONAL = ["3200", "62", "8", "72", "65", "34"]
 
-
-# ------------------------------------------------------------------- разбор
 
 def test_parse_positional_args():
     params, errors = tb.parse_args(POSITIONAL)
@@ -66,8 +59,6 @@ def test_parse_bad_lift_type():
     assert any("ЭЦН | ШГН | фонтан" in e for e in errors)
 
 
-# ------------------------------------------------------------- сборка кейса
-
 def test_main_menu_is_small_and_professional():
     labels = [button.text for row in tb.MAIN_MENU.keyboard for button in row]
     assert labels == [tb.MENU_NEW, tb.MENU_HELP, tb.MENU_EXAMPLE]
@@ -111,8 +102,6 @@ def test_import_does_not_load_bot_token():
     assert tb.BOT_TOKEN == ""
 
 
-# ---------------------------------------------------- compatibility waters
-
 def _compatibility_row(name="Вода <A>"):
     return (f"name={name}; Na=20000; Cl=32000; Ca=4000; Ba=1000; "
             "SO4=300; HCO3=50; pH=6,2; T=25; P=5")
@@ -154,8 +143,6 @@ def test_compatibility_report_has_four_salts_ratio_limits_and_escaping():
     assert "/compatibility" in tb.HELP_TEXT
 
 
-# ------------------------------------------------------------- сборка кейса
-
 def test_build_case_supports_optional_coordinates():
     params, errors = tb.parse_args(POSITIONAL + ["lat=52,37", "lon=30.38"])
     assert errors == []
@@ -176,20 +163,18 @@ def test_map_summary_has_statuses_coordinates_and_empty_state():
 def test_build_case_units_and_defaults():
     params, _ = tb.parse_args(POSITIONAL)
     case = tb.build_case(params)
-    assert case.geometry.tubing_id_m == 0.062        # мм -> м
-    assert case.p_wellhead_pa == 1.2e6               # МПа -> Па
+    assert case.geometry.tubing_id_m == 0.062
+    assert case.p_wellhead_pa == 1.2e6
     assert case.lift_type == "ЭЦН"
-    assert case.water.ions_mg_l == tb.TYPICAL_BRINE  # типовой рассол
+    assert case.water.ions_mg_l == tb.TYPICAL_BRINE
     assert case.wax.wax_content_pct == 5.0
 
-
-# -------------------------------------------------------------------- отчёт
 
 def test_report_no_deposition_branch():
     params, _ = tb.parse_args(POSITIONAL + ["скважина=Речицкая 123"])
     case = tb.build_case(params)
     result = diagnose(case)
-    assert result.wax_onset_m is None               # физика кейса: без отложений
+    assert result.wax_onset_m is None
     report = tb.format_report(result, case, tb.wax_treatment(result, case))
     assert "не прогнозируется" in report
     assert "<b>Рекомендуемое действие</b>" in report
@@ -198,7 +183,6 @@ def test_report_no_deposition_branch():
 
 
 def test_report_deposition_branch():
-    # WAT 48 °C -- выше типовой температуры потока на устье, отложения есть
     params, _ = tb.parse_args(["2900", "62", "6", "64", "45", "48"])
     case = tb.build_case(params)
     result = diagnose(case)
@@ -282,8 +266,6 @@ def test_plan_format_is_safe_compact_and_documents_commands():
     assert "/plan" in tb.START_TEXT and "/plan_clear" in tb.HELP_TEXT
 
 
-# ------------------------------------------------------- подбор обработки
-
 def _fake_result(onset_m: float, wax_severity: float) -> galit.DiagnosisResult:
     return galit.DiagnosisResult(
         well="x", depths=[], temps=[], pressures=[], wat_profile=[],
@@ -292,7 +274,6 @@ def _fake_result(onset_m: float, wax_severity: float) -> galit.DiagnosisResult:
 
 
 def test_wax_treatment_depends_on_lift_type():
-    """Глубокое начало АСПО: ШГН достаёт скребками-центраторами, ЭЦН -- нет."""
     result = _fake_result(onset_m=2000.0, wax_severity=0.6)
 
     base = tb.parse_args(["4000", "62", "5", "30", "45", "48"])[0]
@@ -302,12 +283,10 @@ def test_wax_treatment_depends_on_lift_type():
 
     esp_plan = tb.wax_treatment(result, esp)
     sgn_plan = tb.wax_treatment(result, sgn)
-    assert "скребок" not in esp_plan          # 2000 м > 1500 м вылета скребка
+    assert "скребок" not in esp_plan
     assert "растворитель" in esp_plan or "кабель" in esp_plan
-    assert "2000 м" in sgn_plan               # ШГН: оборудование достаёт до забоя
+    assert "2000 м" in sgn_plan
 
-
-# ----------------------------------------------------------- forecast command
 
 def _diagnosed(name: str) -> galit.DiagnosedWell:
     params, errors = tb.parse_args(POSITIONAL + [f"скважина={name}"])
@@ -343,8 +322,6 @@ def test_forecast_text_has_no_fake_date_or_probability_and_is_chunked():
     assert "не заменяет промысловые исследования" in text
     assert "/forecast" in tb.START_TEXT and "/forecast" in tb.HELP_TEXT
 
-
-# ------------------------------------------------------- treatment journal
 
 def _treatment(**overrides):
     now = tb.datetime(2026, 8, 23, 12, tzinfo=tb.timezone.utc)
@@ -452,7 +429,6 @@ def test_treatment_help_documents_argument_commands_and_measurement_units():
     assert "key=value" in tb.HELP_TEXT and "before=" in tb.HELP_TEXT
     assert "м³/сут" in tb.HELP_TEXT and "валюты и единицы" in tb.HELP_TEXT
 
-# ------------------------------------------------------- chemical inventory
 
 def _chemical_repo(tmp_path):
     repo = galit.ChemicalRepository(tmp_path / "chemicals.json")

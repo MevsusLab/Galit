@@ -1,9 +1,3 @@
-"""Evidence-gated chemical selection and append-only local inventory ledger.
-
-This is a deterministic, single-process prototype.  Efficacy is never inferred:
-recommendations require validated, referenced, tested dose-response evidence for
-one product covering every actionable hazard.
-"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -60,7 +54,6 @@ def _aware(value: datetime, name: str) -> datetime:
 
 def convert_quantity(value: Any, from_unit: str, to_unit: str, *,
                      density_kg_l: Any | None = None) -> Decimal:
-    """Convert chemical quantities exactly through kg; density gates mass/volume."""
     amount = _decimal(value, "value")
     source, target = from_unit.lower().strip(), to_unit.lower().strip()
     factors = {"kg": Decimal("1"), "g": Decimal("0.001"), "mg": Decimal("0.000001")}
@@ -81,7 +74,6 @@ def convert_quantity(value: Any, from_unit: str, to_unit: str, *,
 
 
 def dose_to_kg_m3(value: Any, unit: str) -> Decimal:
-    """mg/L and kg/m3 are dimensionally identical; no rounding is performed."""
     unit = unit.lower().strip().replace("³", "3")
     amount = _decimal(value, "dose")
     if unit in {"kg/m3", "mg/l"}:
@@ -232,7 +224,7 @@ def recommend_products(products: Iterable[ChemicalProduct], envelopes: Iterable[
             selected.append(sorted(candidates, key=lambda e: (e.minimum_effective_dose, e.id))[0])
         if not selected:
             continue
-        # A multi-hazard use is allowed only when compatibility is explicitly known.
+
         if len(wanted) > 1 and not set(wanted).issubset(set(product.compatible_with)):
             continue
         dose = max(e.minimum_effective_dose for e in selected if e.minimum_effective_dose is not None)
@@ -353,7 +345,6 @@ class StockReservation:
 
 
 class ChemicalRepository:
-    """Versioned atomic JSON store. Transactions are immutable and append-only."""
     def __init__(self, path: str | Path = "data/chemicals.json"):
         self.path = Path(path)
         self._lock = threading.RLock()
@@ -443,7 +434,6 @@ class ChemicalRepository:
         return [x for x in rows if product_id is None or x.product_id == product_id]
 
     def append_transaction(self, item: StockTransaction, *, expected_revision: int | None = None) -> StockTransaction:
-        """Append an idempotent adjustment/expiry/release entry; existing entries are immutable."""
         if item.kind in {"receipt", "consumption"}:
             raise ValueError("receipt and consumption must use lot and consume operations")
         def action(data):

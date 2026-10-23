@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import sys
@@ -27,7 +26,6 @@ def hr(title: str = "") -> None:
 
 
 def demo_index_applicability() -> None:
-    """Главный тезис: для этих вод неприменимы ОБА простых индекса."""
     hr("1. ГРАНИЦЫ ПРИМЕНИМОСТИ ИНДЕКСОВ")
 
     brine = WaterAnalysis(
@@ -65,7 +63,6 @@ def demo_index_applicability() -> None:
 
 
 def demo_single_well() -> None:
-    """Разбор одной скважины: профили, глубина АСПО, рекомендация."""
     hr("2. ДИАГНОСТИКА ОДНОЙ СКВАЖИНЫ")
 
     fund = make_fund(40)
@@ -114,7 +111,6 @@ def demo_single_well() -> None:
 
 
 def demo_fund_ranking() -> None:
-    """Ранжирование фонда -- то, ради чего продукт и нужен."""
     hr("3. РАНЖИРОВАНИЕ ФОНДА (40 синтетических скважин)")
 
     fund = make_fund(40)
@@ -145,7 +141,6 @@ def demo_fund_ranking() -> None:
 
 
 def demo_competition_scenarios() -> None:
-    """Отдельный конкурсный режим; unbiased synthetic fund не изменяется."""
     hr("КОНКУРСНЫЙ НАБОР АРХЕТИПОВ")
     print("  " + " / ".join(label.upper() for label in DEMO_LABELS))
     print("  Учебные входы; результаты заново рассчитаны ядром diagnose.")
@@ -171,7 +166,6 @@ def demo_competition_scenarios() -> None:
 
 
 def demo_economics() -> None:
-    """Экономика с допущениями и чувствительностью."""
     hr("4. ИСТОРИЧЕСКИЙ СЦЕНАРНЫЙ ENVELOPE — НЕ ПРОГНОЗ")
     print("  NOT FIELD VALIDATED / NOT A KPI. Для BYN-эффекта нужны ставки заказчика.")
 
@@ -204,7 +198,6 @@ def demo_economics() -> None:
 
 
 def demo_plots() -> None:
-    """Графики (требует matplotlib)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -279,7 +272,6 @@ def main() -> None:
 
     hr()
     print("Готово. Тесты: python -m pytest tests/ -q")
-
 
 if __name__ == "__main__":
     main()

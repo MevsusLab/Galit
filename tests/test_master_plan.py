@@ -1,4 +1,3 @@
-"""Контрактные тесты доменного модуля «План мастера на сегодня»."""
 from dataclasses import replace
 from datetime import date, datetime, timezone
 import re

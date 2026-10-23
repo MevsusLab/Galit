@@ -1,8 +1,3 @@
-"""Smart Map 2.0 geospatial screening service.
-
-Existing domain repositories remain authoritative.  This store contains only explicit
-historical risk observations and user-supplied GIS infrastructure.
-"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -25,6 +20,7 @@ ASSET_TYPES = {"pipeline", "flowline", "waterline", "road", "other"}
 FACILITY_TYPES = {"gathering", "treatment", "injection", "metering", "other"}
 STATUSES = {"active", "inactive", "planned", "unknown"}
 QUALITY = {"good": 1.0, "questionable": .65, "poor": .35, "unknown": .2}
+
 
 class SmartMapStorageError(RuntimeError): pass
 class SmartMapConflictError(RuntimeError): pass
@@ -176,7 +172,6 @@ def risk_status(value: float | None, policy: SmartMapPolicy | None = None) -> st
 
 
 class SmartMapRepository:
-    """Versioned UTF-8 atomic repository for manual observations and user GIS."""
     _locks: dict[str, threading.RLock]={}; _guard=threading.Lock()
     def __init__(self, path: str | Path | None = None, lock_timeout: float = 5):
         self.path=Path(path or os.environ.get("GALIT_SMART_MAP_STORAGE","data/smart_map.json")); self.lock_timeout=lock_timeout
@@ -304,7 +299,6 @@ class SmartMapService:
         for seed in bad:
             members=[x for x in bad if haversine_km(seed["latitude"],seed["longitude"],x["latitude"],x["longitude"])<=radius]
             if len(members)>=threshold:
-                # star neighbourhood prevents single-link chain artefacts
                 ids=tuple(sorted({x["well"]["canonical_id"] for x in members})); candidates.append((ids,members))
         selected=[]; used=set()
         for ids,members in sorted(candidates,key=lambda x:(-len(x[0]),x[0])):

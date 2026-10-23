@@ -1,4 +1,3 @@
-"""Versioned digital well passport with safe local attachments and treatment aggregation."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
@@ -37,7 +36,7 @@ class PassportEventType(str, Enum):
 
 
 class PassportStorageError(RuntimeError):
-    """Passport data cannot be read or safely persisted."""
+    pass
 
 
 class PassportNotFoundError(LookupError):
@@ -207,7 +206,6 @@ def _validate_event_data(kind: PassportEventType, data: dict[str, Any]) -> dict[
 
 
 class PassportRepository:
-    """Thread/process-safe JSON event store with atomic replacement and safe files."""
     _locks: dict[str, threading.RLock] = {}
     _guard = threading.Lock()
 

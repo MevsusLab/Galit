@@ -1,4 +1,3 @@
-"""Leakage-safe deterministic train/test splitting."""
 from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
@@ -22,7 +21,6 @@ def split_by_well(snapshots: list[WellSnapshot], *, test_fraction: float = .2,
 
 def temporal_group_holdout(snapshots: list[WellSnapshot], *, test_fraction: float=.2,
                            seed: int=0) -> tuple[list[WellSnapshot], list[WellSnapshot]]:
-    """Hold out whole latest wells; preserves time ordering and zero well overlap."""
     if not 0 < test_fraction < 1: raise ValueError("test_fraction must be between 0 and 1")
     latest = {}
     for s in snapshots: latest[s.well_id] = max(latest.get(s.well_id, s.timestamp), s.timestamp)
@@ -47,7 +45,6 @@ def validate_pilot_split(
     calibration: Sequence[Mapping[str, Any] | WellSnapshot],
     holdout: Sequence[Mapping[str, Any] | WellSnapshot],
 ) -> dict[str, Any]:
-    """Reject grouped or chronological leakage across pilot partitions."""
     names = ("train", "calibration", "holdout")
     partitions = tuple(train_cal_hold for train_cal_hold in (train, calibration, holdout))
     if any(not part for part in partitions):

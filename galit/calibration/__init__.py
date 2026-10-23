@@ -1,4 +1,3 @@
-"""Offline factual-history calibration API for GALIT."""
 from .schema import *
 from .loader import (assert_no_leakage, generate_template, load_history,
                      snapshot_to_well_case, template_row, validate_rows)

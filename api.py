@@ -1,22 +1,3 @@
-"""REST API ГАЛИТ: обёртка расчётного ядра для корпоративных дашбордов.
-
-Контракт:
-    POST /api/v1/diagnose   -- диагностика одной скважины (JSON -> JSON)
-    GET  /api/v1/health     -- проверка живости сервиса
-
-Запуск для локальной отладки:
-    python api.py
-
-Продакшен (несколько воркеров, за реверс-прокси):
-    uvicorn api:app --host 0.0.0.0 --port 8000 --workers 4
-
-Спецификация OpenAPI и Swagger UI доступны на /docs.
-
-Модели запроса -- строгое зеркало WellCase из galit/integrated.py:
-поля вложенных групп соответствуют полям дата-классов ядра, остальные
-параметры дата-классов (roughness_m, k_earth, pour_point_c, ...)
-остаются со значениями по умолчанию.
-"""
 from __future__ import annotations
 
 import json
@@ -57,7 +38,6 @@ from galit.scale import MW as KNOWN_IONS
 
 
 def _load_server_calibration():
-    """Load only the operator-selected startup artifact; requests never supply paths."""
     configured = os.environ.get("GALIT_CALIBRATION_ARTIFACT", "").strip()
     if not configured:
         return None
@@ -66,7 +46,6 @@ def _load_server_calibration():
     if path != allowed_root and allowed_root not in path.parents:
         raise RuntimeError(f"Calibration artifact must be inside allow-listed root {allowed_root}")
     return ParameterSet.load(path)
-
 
 SERVER_PARAMETER_SET = _load_server_calibration()
 SERVER_RUNTIME_CALIBRATION = SERVER_PARAMETER_SET.to_runtime() if SERVER_PARAMETER_SET else None
@@ -84,14 +63,12 @@ def _positive_int_env(name: str, default: int) -> int:
 
 
 def parse_cors_origins(raw: str | None) -> list[str]:
-    """Parse an explicit origin allow-list; empty means deny cross-origin requests."""
     origins = [item.strip().rstrip("/") for item in (raw or "").split(",") if item.strip()]
     if "*" in origins:
         raise RuntimeError("GALIT_CORS_ORIGINS wildcard is forbidden")
     if any(not origin.startswith(("http://", "https://")) for origin in origins):
         raise RuntimeError("GALIT_CORS_ORIGINS entries must be absolute http(s) origins")
     return list(dict.fromkeys(origins))
-
 
 MAX_BATCH_SIZE = _positive_int_env("GALIT_MAX_BATCH_SIZE", 25)
 CORS_ORIGINS = parse_cors_origins(os.environ.get("GALIT_CORS_ORIGINS"))
@@ -122,20 +99,13 @@ def get_smart_map_service() -> galit.SmartMapService:
 
 
 def get_twin_service() -> galit.DigitalTwinService:
-    """Build a lightweight aggregation service over the current repositories."""
     return galit.build_default_service(
         watercut=WATERCUT, equipment=EQUIPMENT, treatments=TREATMENTS,
         passports=PASSPORTS, manual=TWIN_EVENTS,
     )
 
 
-# --------------------------------------------------------------------------
-# Модели запроса (зеркало WellCase)
-# --------------------------------------------------------------------------
-
 class GeometryIn(BaseModel):
-    """Конструкция скважины."""
-
     depth_m: float = Field(gt=0.0, description="Глубина по стволу до забоя, м")
     tubing_id_m: float = Field(gt=0.0, description="Внутренний диаметр НКТ, м")
     inclination_deg: float = Field(
@@ -145,24 +115,18 @@ class GeometryIn(BaseModel):
 
 
 class RateIn(BaseModel):
-    """Дебиты в поверхностных условиях, м3/сут и м3/м3."""
-
     q_oil_m3d: float = Field(ge=0.0, description="Дебит нефти, м3/сут")
     q_water_m3d: float = Field(ge=0.0, description="Дебит воды, м3/сут")
     gor_m3m3: float = Field(ge=0.0, description="Газовый фактор, м3/м3")
 
 
 class FluidIn(BaseModel):
-    """Свойства флюидов (относительные плотности, минерализация)."""
-
     gamma_oil: float = Field(gt=0.0, description="Отн. плотность нефти по воде")
     gamma_gas: float = Field(gt=0.0, description="Отн. плотность газа по воздуху")
     salinity_ppm: float = Field(ge=0.0, description="Минерализация воды, мг/л")
 
 
 class ThermalIn(BaseModel):
-    """Теплофизика для модели Ramey."""
-
     t_surface_c: float = Field(description="Температура пород у поверхности, C")
     geothermal_grad: float = Field(description="Геотермический градиент, К/м")
     u_to: float = Field(gt=0.0, description="Коэф. теплопередачи, Вт/(м2*К)")
@@ -172,8 +136,6 @@ class ThermalIn(BaseModel):
 
 
 class WaterIn(BaseModel):
-    """Химанализ пластовой воды: ионы в мг/л, C, Па."""
-
     ions_mg_l: dict[str, Annotated[float, Field(ge=0.0)]] = Field(
         description="Концентрации ионов, мг/л: Na, Cl, Ca, Mg, K, HCO3, SO4, ...",
     )
@@ -194,8 +156,6 @@ class WaterIn(BaseModel):
 
 
 class WaxIn(BaseModel):
-    """Парафинистость нефти (лабораторный замер)."""
-
     wat_stock_tank_c: float = Field(
         description="WAT дегазированной нефти при атмосферном давлении, C",
     )
@@ -205,8 +165,6 @@ class WaxIn(BaseModel):
 
 
 class WellCaseIn(BaseModel):
-    """Полное описание скважины для расчёта (JSON-зеркало WellCase)."""
-
     name: str = Field(min_length=1, description="Название скважины")
     geometry: GeometryIn
     rate: RateIn
@@ -230,7 +188,6 @@ class WellCaseIn(BaseModel):
     longitude: float | None = Field(default=None, ge=-180, le=180, description="Долгота WGS84")
     cluster: str | None = Field(default=None, max_length=200, description="Куст")
     site: str | None = Field(default=None, max_length=200, description="Участок или месторождение")
-
 
 
 class WellboreMeasurementIn(BaseModel):
@@ -427,8 +384,6 @@ class ForecastResponse(BaseModel):
 
 
 class RiskEconomicsIn(BaseModel):
-    """Explicit single-currency inputs; no prices are inferred by the server."""
-
     event_probability: float | None = Field(default=None, ge=0, le=1)
     horizon_days: float = Field(gt=0, le=3650)
     treatment_efficiency: float = Field(ge=0, le=1)
@@ -863,16 +818,10 @@ class PassportEventUpdateIn(BaseModel):
             raise ValueError("event_at must include a timezone offset")
         return value
 
-
-# --------------------------------------------------------------------------
-# Response assembly
-# --------------------------------------------------------------------------
-
 LEGACY_FIELDS = {"integrated_risk", "dominant", "wax_onset_m", "recommendation", "warnings"}
 
 
 def _to_well_case(payload: WellCaseIn) -> WellCase:
-    """Map the API model and inferred provenance without accepting client paths."""
     sources: dict[str, str] = {}
     for api_field in ("co2_mol_frac", "inhibitor_efficiency", "p_wellhead_pa"):
         if api_field not in payload.model_fields_set:
@@ -965,11 +914,6 @@ async def _calculate(payload: WellCaseIn, production_mode: bool,
         diagnose, _to_well_case(payload), production_mode, None, config,
         SERVER_RUNTIME_CALIBRATION,
     )
-
-
-# --------------------------------------------------------------------------
-# Application and endpoints
-# --------------------------------------------------------------------------
 
 app = FastAPI(
     title="GALIT API",
@@ -2295,7 +2239,6 @@ async def create_twin_event(payload: TwinManualEventIn):
                                    status=payload.status, metrics=metrics, metadata=payload.metadata)
         return (await run_in_threadpool(TWIN_EVENTS.add, event)).to_dict()
     except Exception as exc: raise _twin_error(exc) from exc
-
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

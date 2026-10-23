@@ -1,9 +1,3 @@
-"""Auditable, immutable what-if comparisons built on GALIT's existing engines.
-
-The module changes only inputs that the diagnostic model actually consumes.
-Operational actions (dosage, wash, operating mode) have no invented physical
-response: their effects must be supplied explicitly through ``EffectOverride``.
-"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
@@ -24,8 +18,6 @@ class ScenarioStatus(str, Enum):
 
 @dataclass(frozen=True)
 class EffectOverride:
-    """Explicit, user-sourced effects for actions absent from diagnostic physics."""
-
     inhibitor_efficiency: float | None = None
     oil_rate_delta_m3_day: float | None = None
     oil_rate_relative_change: float | None = None
@@ -53,8 +45,6 @@ class EffectOverride:
 
 @dataclass(frozen=True)
 class ScenarioChanges:
-    """Requested changes; relative values are fractions (e.g. -0.10 means -10%)."""
-
     oil_rate_delta_m3_day: float | None = None
     oil_rate_relative_change: float | None = None
     water_rate_delta_m3_day: float | None = None
@@ -168,7 +158,6 @@ def _snapshot(case: WellCase, result: DiagnosisResult, forecast: WellForecast) -
 
 def compare_scenario(case: WellCase, changes: ScenarioChanges,
                      economics: ScenarioEconomics | None = None) -> ScenarioComparison:
-    """Compare diagnostics without mutating ``case`` and preserve a full audit trail."""
     warnings: list[str] = []
     missing: list[str] = []
     assumptions: list[str] = [

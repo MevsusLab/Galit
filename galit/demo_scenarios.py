@@ -1,9 +1,3 @@
-"""Deterministic, explicitly illustrative competition-demo scenarios.
-
-The cases use the public :class:`WellCase` structure and every displayed
-result is calculated by :func:`galit.integrated.diagnose`.  They are teaching
-inputs, not fitted wells and not evidence of field accuracy.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -99,7 +93,6 @@ def _case(
 
 
 def competition_scenarios() -> tuple[DemoScenario, ...]:
-    """Return fresh deterministic inputs for the five teaching archetypes."""
     halite = _case(
         "DEMO-HALITE-01",
         {"Na": 155_000.0, "Cl": 285_000.0, "Ca": 34_000.0,
@@ -161,7 +154,6 @@ def _co2_sensitivity(case: WellCase) -> tuple[SensitivityPoint, ...]:
 
 
 def run_competition_scenarios() -> tuple[DemoScenarioResult, ...]:
-    """Calculate all competition scenarios with the production diagnosis core."""
     output = []
     for scenario in competition_scenarios():
         diagnosis = diagnose(scenario.case)

@@ -1,4 +1,3 @@
-"""Versioned tabular contracts for offline calibration history."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -8,7 +7,6 @@ from typing import Any
 
 SCHEMA_VERSION = "1.0"
 
-# Every production snapshot is self-contained: constructor defaults are forbidden.
 SNAPSHOT_COLUMNS = (
     "schema_version", "well_id", "timestamp", "source", "quality",
     "depth_m", "tubing_id_m", "inclination_deg", "roughness_m",
@@ -33,6 +31,7 @@ LEAKAGE_COLUMNS = frozenset({
     "post_pressure_pa", "post_corrosion_mm_y", "outcome",
 })
 
+
 @dataclass(frozen=True)
 class InputProvenance:
     source: str
@@ -40,6 +39,7 @@ class InputProvenance:
     timestamp: datetime
     schema_version: str = SCHEMA_VERSION
     record_id: str | None = None
+
 
 @dataclass(frozen=True)
 class WellSnapshot:
@@ -54,6 +54,7 @@ class WellSnapshot:
     def timestamp(self) -> datetime:
         return self.provenance.timestamp
 
+
 @dataclass(frozen=True)
 class Observation:
     well_id: str
@@ -64,6 +65,7 @@ class Observation:
     source: str
     quality: str
 
+
 @dataclass(frozen=True)
 class Event:
     well_id: str
@@ -72,6 +74,7 @@ class Event:
     label: float | None
     source: str
     quality: str
+
 
 @dataclass(frozen=True)
 class Treatment:
@@ -82,6 +85,7 @@ class Treatment:
     source: str
     quality: str
 
+
 @dataclass
 class ValidationResult:
     errors: list[str] = field(default_factory=list)
@@ -90,6 +94,7 @@ class ValidationResult:
     def raise_for_errors(self) -> None:
         if self.errors:
             raise ValueError("History validation failed:\n- " + "\n- ".join(self.errors))
+
 
 @dataclass
 class HistoryDataset:
