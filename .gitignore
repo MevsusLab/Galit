@@ -11,8 +11,11 @@ __pycache__/
 venv/
 
 # Local tooling and OS files
+.VSCodeCounter/
 .postman/
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+100
+2000000
