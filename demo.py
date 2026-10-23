@@ -1,8 +1,4 @@
-"""ГАЛИТ -- сквозная демонстрация: диагностика фонда и экономика.
 
-Запуск:  python demo.py
-Графики: python demo.py --plots
-"""
 from __future__ import annotations
 
 import sys

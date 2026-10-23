@@ -398,6 +398,34 @@ class EquipmentRepository:
         return sorted((forecast_equipment(x, self.list_telemetry(x.well), as_of=as_of) for x in self.list_equipment()),
                       key=lambda x: (-(x.baseline_failure_risk or -1), x.well.casefold()))
 
+    def detect_anomalies(self, well: str, **kwargs):
+        """Run ML anomaly detection on well telemetry (Isolation Forest).
+
+        Trains on the fly on normal operation history -- no failure labels needed.
+        Delegates to galit.anomaly.detect_anomalies.
+        """
+        from .anomaly import detect_anomalies as _detect, AnomalyReport
+        meta = self.get_equipment(well)
+        telemetry = self.list_telemetry(well)
+        if not telemetry:
+            return AnomalyReport(
+                well=well, status="insufficient_data", total_points=0,
+                anomaly_count=0, anomaly_rate=0.0, max_anomaly_score=0.0,
+                latest_anomaly_score=None, trending_up=False, points=(),
+                dominant_anomaly_feature=None, training_samples=0,
+            )
+        return _detect(telemetry, meta.lift_type, **kwargs)
+
+    def portfolio_anomalies(self) -> dict:
+        """Run ML anomaly detection for the entire equipment portfolio."""
+        result = {}
+        for meta in self.list_equipment():
+            try:
+                result[meta.well] = self.detect_anomalies(meta.well)
+            except (EquipmentNotFoundError, EquipmentStorageError):
+                pass
+        return result
+
 
 CSV_COLUMNS = tuple(TelemetrySnapshot.__dataclass_fields__)
 def telemetry_csv_template() -> bytes:

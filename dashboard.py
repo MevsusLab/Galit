@@ -1636,6 +1636,93 @@ def fig_profiles(results: list[DiagnosisResult], labels: list[str],
     return fig
 
 
+def fig_hybrid_wellbore(result: galit.HybridProfileResult) -> go.Figure:
+    """Визуализация гибридного цифрового двойника: Физика vs Датчики vs ML."""
+    fig = make_subplots(
+        rows=1, cols=2, horizontal_spacing=0.12,
+        subplot_titles=("Температура T(z), °C", "Давление P(z), МПа"),
+    )
+
+    # 1. Температура
+    fig.add_trace(go.Scatter(
+        x=result.temps_physics, y=result.depths, mode="lines",
+        name="Теория Ramey (1962)",
+        line=dict(color="#64748B", width=2, dash="dash"),
+        hovertemplate="T_phys = %{x:.1f} °C · z = %{y:.0f} м",
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=result.temps_hybrid, y=result.depths, mode="lines",
+        name="Гибридный двойник (Physics + ML)",
+        line=dict(color="#047857", width=3.2),
+        hovertemplate="T_hybrid = %{x:.1f} °C · z = %{y:.0f} м",
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=result.wat_profile_hybrid, y=result.depths, mode="lines",
+        name="Кривая WAT(P)",
+        line=dict(color="#D97706", width=1.8, dash="dot"),
+        hovertemplate="WAT = %{x:.1f} °C · z = %{y:.0f} м",
+    ), row=1, col=1)
+
+    temp_meas = [(m.temperature_c, m.depth_m, m.sensor_type) for m in result.measurements if m.temperature_c is not None]
+    if temp_meas:
+        fig.add_trace(go.Scatter(
+            x=[m[0] for m in temp_meas], y=[m[1] for m in temp_meas],
+            mode="markers", name="Датчики Т (Устье / ТМС)",
+            marker=dict(size=12, color="#DC2626", symbol="diamond", line=dict(width=1.5, color="#FFFFFF")),
+            text=[f"Датчик: {m[2]}" for m in temp_meas],
+            hovertemplate="Замер T = %{x:.1f} °C · z = %{y:.0f} м<br>%{text}",
+        ), row=1, col=1)
+
+    if result.wax_onset_physics_m is not None:
+        fig.add_hline(
+            y=result.wax_onset_physics_m, line_dash="dash", line_color="#94A3B8", line_width=1.2,
+            annotation_text=f"Теория АСПО: {result.wax_onset_physics_m:.0f} м",
+            annotation_position="bottom left", row=1, col=1,
+        )
+    if result.wax_onset_hybrid_m is not None:
+        fig.add_hline(
+            y=result.wax_onset_hybrid_m, line_dash="solid", line_color="#DC2626", line_width=2.0,
+            annotation_text=f"Факт АСПО (Гибрид): {result.wax_onset_hybrid_m:.0f} м",
+            annotation_position="top left", row=1, col=1,
+        )
+
+    # 2. Давление
+    fig.add_trace(go.Scatter(
+        x=[p / 1e6 for p in result.pressures_physics], y=result.depths, mode="lines",
+        name="Теория Beggs-Brill (1973)",
+        line=dict(color="#64748B", width=2, dash="dash"),
+        showlegend=False,
+        hovertemplate="P_phys = %{x:.2f} МПа · z = %{y:.0f} м",
+    ), row=1, col=2)
+
+    fig.add_trace(go.Scatter(
+        x=[p / 1e6 for p in result.pressures_hybrid], y=result.depths, mode="lines",
+        name="Гибридный P(z)",
+        line=dict(color="#1D4ED8", width=3.2),
+        showlegend=False,
+        hovertemplate="P_hybrid = %{x:.2f} МПа · z = %{y:.0f} м",
+    ), row=1, col=2)
+
+    press_meas = [(m.pressure_pa / 1e6, m.depth_m, m.sensor_type) for m in result.measurements if m.pressure_pa is not None]
+    if press_meas:
+        fig.add_trace(go.Scatter(
+            x=[m[0] for m in press_meas], y=[m[1] for m in press_meas],
+            mode="markers", name="Датчики P (Буфер / Забой)",
+            showlegend=False,
+            marker=dict(size=12, color="#DC2626", symbol="diamond", line=dict(width=1.5, color="#FFFFFF")),
+            text=[f"Датчик: {m[2]}" for m in press_meas],
+            hovertemplate="Замер P = %{x:.2f} МПа · z = %{y:.0f} м<br>%{text}",
+        ), row=1, col=2)
+
+    _style_axes(fig)
+    fig.update_yaxes(title="Глубина по стволу, м", row=1, col=1, autorange="reversed")
+    fig.update_yaxes(title="Глубина по стволу, м", row=1, col=2, autorange="reversed")
+    fig.update_layout(height=480, margin=dict(l=20, r=20, t=40, b=20))
+    return fig
+
+
 FORECAST_HISTORY_COLUMNS = (
     "well", "timestamp", "wax_severity", "halite_severity", "calcite_severity",
     "corrosion_wall_loss_mm", "oil_rate_m3_day", "quality", "source", "regime_id",
@@ -2494,7 +2581,7 @@ def equipment_trend_frame(rows: list[galit.TelemetrySnapshot]) -> pd.DataFrame:
     } for row in rows])
 
 
-def render_equipment_forecasts(repository: galit.EquipmentRepository) -> None:
+def render_equipment_forecasts(repository: galit.EquipmentRepository, results: list[DiagnosisResult] | None = None) -> None:
     st.subheader("Прогноз отказов ЭЦН и ШГН")
     st.warning(galit.EQUIPMENT_DISCLAIMER)
     st.download_button("Скачать CSV-шаблон телеметрии", galit.telemetry_csv_template(),
@@ -2540,11 +2627,134 @@ def render_equipment_forecasts(repository: galit.EquipmentRepository) -> None:
                                    "Объяснение": x.explanation} for x in forecast.causes]),
                      width="stretch", hide_index=True)
         st.markdown(f"**Рекомендуемое действие:** {forecast.recommended_action}")
-    trend = equipment_trend_frame(repository.list_telemetry(selected))
+    raw_telemetry = repository.list_telemetry(selected)
+    trend = equipment_trend_frame(raw_telemetry)
     if len(trend) > 1:
+        st.markdown("#### Тренды параметров телеметрии")
         st.line_chart(trend.set_index("timestamp"))
     elif len(trend) == 1:
         st.info("Доступен один snapshot: тренды не рассчитываются, confidence снижен.")
+
+    # -----------------------------------------------------------------------
+    # ML Anomaly Detection (Isolation Forest)
+    # -----------------------------------------------------------------------
+    try:
+        anom_report = repository.detect_anomalies(selected)
+    except Exception as anom_exc:
+        anom_report = None
+
+    if anom_report and anom_report.status != "unavailable":
+        st.markdown("---")
+        st.markdown("### 🤖 Локальный ML-детектор предаварийных аномалий (Isolation Forest)")
+        st.caption("Unsupervised обнаружение скрытых аномалий в многомерном потоке телеметрии до явного отказа или заклинивания.")
+
+        if anom_report.status == "insufficient_data":
+            st.info(f"ℹ️ Для обучения Isolation Forest требуется от 5 snapshots телеметрии (загружено: {anom_report.training_samples}). Модель обучается на лету на истории нормальной работы скважины.")
+        else:
+            m1, m2, m3, m4 = st.columns(4)
+            latest_sc = anom_report.latest_anomaly_score or 0.0
+            stat_label = {"ok": "🟢 Норма", "warning": "🟡 Внимание (дрейф)", "critical": "🔴 Предаварийный режим"}.get(anom_report.status, anom_report.status)
+            m1.metric("Текущий Anomaly Score", f"{latest_sc:.2f}",
+                      delta="Дрейф параметров" if anom_report.status != "ok" else "В норме",
+                      delta_color="inverse")
+            m2.metric("Статус ML-модели", stat_label)
+            m3.metric("Аномалий в выборке", f"{anom_report.anomaly_count} из {anom_report.total_points} ({anom_report.anomaly_rate:.0%})")
+            dom_name = galit.ANOMALY_FEATURE_LABELS.get(anom_report.dominant_anomaly_feature or "", anom_report.dominant_anomaly_feature or "—")
+            m4.metric("Ведущий канал сбоя", dom_name)
+
+            # Physical Synergy explanation
+            diag = next((r for r in (results or []) if r.well == selected), None)
+            dom_feat = anom_report.dominant_anomaly_feature
+            if diag:
+                si_h = diag.scale.get("si_halite") if isinstance(diag.scale, dict) else None
+                h_kg = diag.scale.get("halite_kg_m3", 0.0) if isinstance(diag.scale, dict) else 0.0
+                wax_on = diag.wax_onset_m
+                corr_v = diag.corrosion.get("rate_mm_yr", 0.0) if isinstance(diag.corrosion, dict) else 0.0
+
+                if dom_feat in ("current_a", "intake_pressure") and si_h is not None and si_h > -0.05:
+                    st.error(
+                        f"⚡ **Физическая связка ГАЛИТ + ML (Галит):** ML зафиксировал аномалию по каналу *{dom_name}* "
+                        f"(Score: {latest_sc:.2f}), а физическое ядро подтверждает пересыщение галита на приёме насоса "
+                        f"(**SI = {si_h:+.2f}**, кристаллизация **{h_kg:.1f} кг/м³** воды). "
+                        f"**Инженерный вывод:** Формирование солевой пробки на приёмной сетке ЭЦН, а не механический износ вала. "
+                        f"Рекомендована превентивная промывка пресной водой до снижения дебита и заклинивания насоса."
+                    )
+                elif dom_feat in ("motor_temperature_c", "vibration_mm_s") and wax_on is not None:
+                    st.warning(
+                        f"🔥 **Физическая связка ГАЛИТ + ML (АСПО):** ML обнаружил аномальный рост *{dom_name}*. "
+                        f"Физическая модель рассчитывает глубину начала отложений парафина на **{wax_on:.0f} м** от устья. "
+                        f"**Инженерный вывод:** Сужение проточной части насоса и НКТ парафином, перегрев ПЭД из-за ухудшения охлаждения. "
+                        f"Рекомендован прогрев греющим кабелем или скребкование до глубины отложений."
+                    )
+                elif corr_v > 0.15:
+                    st.warning(
+                        f"🛡️ **Физическая связка ГАЛИТ + ML (Коррозия):** Скорость коррозии по de Waard: **{corr_v:.2f} мм/год**. "
+                        f"Аномалия давления/вибрации может указывать на пропуск обратного клапана или промыв рабочих ступеней."
+                    )
+                elif dom_feat:
+                    st.info(
+                        f"💡 **Интерпретация ведущего канала (*{dom_name}*):** "
+                        f"{galit.ANOMALY_PHYSICS_HINTS.get(dom_feat, 'Отклонение канала от базового профиля работы скважины.')}"
+                    )
+            elif dom_feat:
+                st.info(
+                    f"💡 **Интерпретация признаков ML (*{dom_name}*):** "
+                    f"{galit.ANOMALY_PHYSICS_HINTS.get(dom_feat, 'Отклонение канала от базового профиля работы скважины.')}"
+                )
+
+            # Interactive Plotly chart with highlighted anomaly points
+            if raw_telemetry and len(anom_report.points) == len(raw_telemetry):
+                st.markdown("##### Детализация аномалий на графике телеметрии")
+                feature_options = [f for f in ["current_a", "intake_pressure", "discharge_pressure", "motor_temperature_c", "vibration_mm_s", "rod_load_kn"]
+                                   if any(getattr(sn, f, None) is not None for sn in raw_telemetry)]
+                if feature_options:
+                    ch = st.selectbox("Канал для анализа аномалий:", feature_options,
+                                      format_func=lambda k: galit.ANOMALY_FEATURE_LABELS.get(k, k),
+                                      key="anom_feature_select")
+                    
+                    df_chart = pd.DataFrame([{
+                        "timestamp": sn.timestamp,
+                        "value": getattr(sn, ch, None),
+                        "score": p.anomaly_score,
+                        "is_anomaly": p.is_anomaly,
+                        "level": p.level,
+                    } for sn, p in zip(raw_telemetry, anom_report.points)])
+                    df_chart = df_chart.dropna(subset=["value"]).sort_values("timestamp")
+
+                    if not df_chart.empty:
+                        fig = go.Figure()
+                        # Normal line
+                        fig.add_trace(go.Scatter(
+                            x=df_chart["timestamp"],
+                            y=df_chart["value"],
+                            mode="lines+markers",
+                            name=galit.ANOMALY_FEATURE_LABELS.get(ch, ch),
+                            line=dict(color="#0F6B43", width=2),
+                            marker=dict(size=5, color="#0F6B43"),
+                        ))
+                        # Anomaly markers
+                        anom_df = df_chart[df_chart["is_anomaly"]]
+                        if not anom_df.empty:
+                            fig.add_trace(go.Scatter(
+                                x=anom_df["timestamp"],
+                                y=anom_df["value"],
+                                mode="markers",
+                                name="ML Аномалия (Isolation Forest)",
+                                marker=dict(size=12, color="#E53935", symbol="diamond",
+                                            line=dict(width=2, color="#FFFFFF")),
+                                text=[f"Score: {sc:.2f} ({lvl})" for sc, lvl in zip(anom_df["score"], anom_df["level"])],
+                                hoverinfo="x+y+text+name",
+                            ))
+                        fig.update_layout(
+                            height=360,
+                            margin=dict(l=20, r=20, t=30, b=20),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                            xaxis_title="Время",
+                            yaxis_title=galit.ANOMALY_FEATURE_LABELS.get(ch, ch),
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
 
 
 def treatment_well_context(cases_by_name: dict[str, WellCase],
@@ -3850,6 +4060,87 @@ def main() -> None:
         else:
             st.info("Выберите хотя бы одну скважину.")
 
+        # -----------------------------------------------------------------------
+        # Раздел 2.2: Гибридный цифровой двойник ствола (Physics + ML Residual)
+        # -----------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("### 🔬 Гибридный цифровой двойник ствола (Physics-Informed Residual Learning)")
+        st.caption("Связка аналитической термогидродинамики Рэмея / Беггса-Брилла и машинного обучения невязок по датчикам устья и ТМС. Устраняет расхождение теории с промыслом и корректирует глубину отложений АСПО.")
+
+        well_names = list(cases_by_name.keys()) if cases_by_name else []
+        if well_names:
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                chosen_well = st.selectbox("Скважина для гибридного расчета:", well_names, key="sb_hybrid_well")
+                case_item = cases_by_name[chosen_well]
+                mode = st.radio(
+                    "Режим показаний датчиков:",
+                    ["Промысловые датчики ТМС (остывание устья + скин отложений)",
+                     "Ручной ввод показаний датчиков",
+                     "Только базовая физика (без невязок)"],
+                    key="rb_hybrid_mode",
+                )
+
+            meas_input = []
+            if mode == "Промысловые датчики ТМС (остывание устья + скин отложений)":
+                meas_input = galit.generate_realistic_measurements(
+                    case_item.name, case_item.geometry.depth_m,
+                    case_item.thermal.t_surface_c, case_item.thermal.geothermal_grad,
+                    p_wellhead_pa=case_item.p_wellhead_pa,
+                )
+            elif mode == "Ручной ввод показаний датчиков":
+                with c2:
+                    st.markdown("**Фактические показания датчиков**")
+                    r1, r2 = st.columns(2)
+                    _, base_t, _ = galit.temperature_profile(
+                        case_item.geometry, case_item.rate, case_item.fluid, case_item.thermal, n_nodes=10
+                    )
+                    default_t_wh = round(base_t[0] - 3.2, 1)
+                    t_wh_val = r1.number_input("Устьевой термометр, °C", value=float(default_t_wh), step=0.5, key="inp_t_wh")
+                    p_wh_val = r2.number_input("Буферный манометр, МПа", value=round(case_item.p_wellhead_pa / 1e6, 2), step=0.1, key="inp_p_wh") * 1e6
+
+                    t_bh_est = round(case_item.thermal.t_surface_c + case_item.thermal.geothermal_grad * case_item.geometry.depth_m - 1.5, 1)
+                    t_bh_val = r1.number_input("Забойный датчик ТМС, °C", value=float(t_bh_est), step=0.5, key="inp_t_bh")
+                    p_bh_val = r2.number_input("Давление на приеме ТМС, МПа", value=33.5, step=0.5, key="inp_p_bh") * 1e6
+
+                    meas_input = [
+                        galit.WellboreMeasurement(depth_m=0.0, temperature_c=t_wh_val, pressure_pa=p_wh_val, sensor_type="surface"),
+                        galit.WellboreMeasurement(depth_m=round(case_item.geometry.depth_m * 0.85, 1),
+                                                 temperature_c=t_bh_val, pressure_pa=p_bh_val, sensor_type="tms_bottomhole"),
+                    ]
+
+            hybrid_res = galit.calculate_hybrid_profiles(
+                case_item.name, case_item.geometry, case_item.rate, case_item.fluid,
+                case_item.thermal, case_item.wax, p_wellhead_pa=case_item.p_wellhead_pa,
+                measurements=meas_input,
+            )
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("АСПО по Рэмею (Физика)", "—" if hybrid_res.wax_onset_physics_m is None else f"{hybrid_res.wax_onset_physics_m:.0f} м")
+            k2.metric("АСПО Гибридный двойник", "—" if hybrid_res.wax_onset_hybrid_m is None else f"{hybrid_res.wax_onset_hybrid_m:.0f} м")
+            shift_str = "—"
+            if hybrid_res.wax_onset_shift_m is not None:
+                sign = "+" if hybrid_res.wax_onset_shift_m > 0 else ""
+                shift_str = f"{sign}{hybrid_res.wax_onset_shift_m:.0f} м"
+            k3.metric("Смещение зоны отложений", shift_str,
+                      delta="Глубже в ствол" if (hybrid_res.wax_onset_shift_m or 0) > 0 else "Без смещения",
+                      delta_color="inverse" if (hybrid_res.wax_onset_shift_m or 0) > 0 else "off")
+            k4.metric("Макс. невязка ΔT / ΔP", f"{hybrid_res.temp_residual_max_c:.1f} °C / {hybrid_res.pressure_residual_max_mpa:.2f} МПа")
+
+            if (hybrid_res.wax_onset_shift_m or 0) > 10:
+                st.warning(
+                    f"⚡ **Критический эффект Physics-Informed ML:** Реальный поток остывает быстрее теории "
+                    f"(невязка датчиков на устье {hybrid_res.delta_temps[0]:+.1f} °C). Зона АСПО начинается на глубине "
+                    f"**{hybrid_res.wax_onset_hybrid_m:.0f} м**, а не **{hybrid_res.wax_onset_physics_m:.0f} м**. "
+                    f"Без ML-коррекции скребок или греющий кабель опустили бы выше отложений, что привело бы к перекрытию сечения на отметке {hybrid_res.wax_onset_hybrid_m:.0f} м!"
+                )
+            elif mode != "Только базовая физика (без невязок)":
+                st.success(
+                    f"✅ Гибридный двойник успешно обучен по показаниям датчиков: невязка температуры {hybrid_res.temp_residual_max_c:.1f} °C, невязка давления {hybrid_res.pressure_residual_max_mpa:.2f} МПа."
+                )
+
+            st.plotly_chart(fig_hybrid_wellbore(hybrid_res), width="stretch", config={"displaylogo": False})
+
     # --- вкладка 3: детальный разбор ---
     with tab_well:
         pairs = dict(result_labels(results))
@@ -4189,13 +4480,13 @@ def main() -> None:
                              sorted(cases_by_name))
 
     with tab_equipment:
-        render_equipment_forecasts(galit.EquipmentRepository(equipment_storage_path()))
+        render_equipment_forecasts(galit.EquipmentRepository(equipment_storage_path()), results=results)
 
     with tab_twin:
         try:
             twin_service, manual_events = get_twin_components(list(cases_by_name.values()))
             render_digital_twin(twin_service, manual_events)
-        except Exception as exc:  # UI boundary: a broken optional source must not hide other tabs.
+        except Exception as exc: 
             st.error(f"Цифровой двойник временно недоступен: {html.escape(str(exc))}")
 
     with tab_journal:

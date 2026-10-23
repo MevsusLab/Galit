@@ -119,6 +119,14 @@ from .scenarios import (
 )
 from .scale import WaterAnalysis, halite_saturation_index, stiff_davis_index
 from .wax import WaxProperties, wax_onset_depth
+from .hybrid_wellbore import (
+    DISCLAIMER as HYBRID_WELLBORE_DISCLAIMER,
+    MODEL_VERSION as HYBRID_WELLBORE_MODEL_VERSION,
+    HybridProfileResult,
+    WellboreMeasurement,
+    calculate_hybrid_profiles,
+    generate_realistic_measurements,
+)
 from .wellbore import (
     FluidProperties,
     ProductionRate,
@@ -163,6 +171,16 @@ from .equipment import (
     telemetry_csv_template,
     telemetry_from_csv,
     telemetry_to_csv,
+)
+
+from .anomaly import (
+    DISCLAIMER as ANOMALY_DISCLAIMER,
+    MODEL_VERSION as ANOMALY_MODEL_VERSION,
+    FEATURE_LABELS as ANOMALY_FEATURE_LABELS,
+    FEATURE_PHYSICS_HINTS as ANOMALY_PHYSICS_HINTS,
+    AnomalyPoint,
+    AnomalyReport,
+    detect_anomalies,
 )
 from .watercut import (
     DISCLAIMER as WATERCUT_DISCLAIMER,
@@ -362,6 +380,13 @@ __all__ = [
     "rank_wells",
     "stiff_davis_index",
     "temperature_profile",
+    "HYBRID_WELLBORE_DISCLAIMER",
+    "HYBRID_WELLBORE_MODEL_VERSION",
+    "HybridProfileResult",
+    "WellboreMeasurement",
+    "calculate_hybrid_profiles",
+    "generate_realistic_measurements",
+
     "wax_onset_depth",
     "DEFAULT_MIN_SAMPLE_SIZE",
     "TREATMENT_SCHEMA_VERSION",
@@ -433,4 +458,11 @@ __all__ = [
     "manual_events_from_csv",
     "normalize_well_name",
     "stable_event_id",
+    "ANOMALY_DISCLAIMER",
+    "ANOMALY_MODEL_VERSION",
+    "ANOMALY_FEATURE_LABELS",
+    "ANOMALY_PHYSICS_HINTS",
+    "AnomalyPoint",
+    "AnomalyReport",
+    "detect_anomalies",
 ]

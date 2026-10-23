@@ -1,4 +1,3 @@
-"""Windows-friendly CLI for GALIT offline calibration."""
 from __future__ import annotations
 import argparse, hashlib, json
 from pathlib import Path

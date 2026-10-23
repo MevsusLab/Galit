@@ -232,6 +232,20 @@ class WellCaseIn(BaseModel):
     site: str | None = Field(default=None, max_length=200, description="Участок или месторождение")
 
 
+
+class WellboreMeasurementIn(BaseModel):
+    depth_m: float = Field(ge=0.0, description="Глубина замера, м")
+    temperature_c: float | None = Field(default=None, description="Измеренная температура, °C")
+    pressure_pa: float | None = Field(default=None, ge=0.0, description="Измеренное давление, Па")
+    sensor_type: str = Field(default="surface", description="surface | tms_bottomhole | survey")
+
+
+class HybridWellboreRequest(BaseModel):
+    well: WellCaseIn
+    measurements: list[WellboreMeasurementIn] | None = None
+    generate_demo_measurements: bool = False
+
+
 class CompatibilityWaterIn(BaseModel):
     name: str = Field(default="water", min_length=1, max_length=200)
     ions_mg_l: dict[str, Annotated[float, Field(ge=0.0)]] = Field(max_length=20)
@@ -1286,6 +1300,59 @@ async def equipment_maintenance() -> list[dict[str, Any]]:
         return [row.to_dict() for row in rows if row.risk_level in {"warning", "critical"}]
     except galit.EquipmentStorageError as exc:
         raise _equipment_error(exc) from exc
+
+
+@app.get("/api/v1/equipment/anomalies/{well}", response_model=None,
+         summary="Local ML telemetry anomaly detection (Isolation Forest)")
+async def equipment_anomalies(well: str) -> dict[str, Any]:
+    try:
+        report = await run_in_threadpool(EQUIPMENT.detect_anomalies, well)
+        return report.to_dict()
+    except (ValueError, galit.EquipmentNotFoundError, galit.EquipmentStorageError) as exc:
+        raise _equipment_error(exc) from exc
+
+
+@app.get("/api/v1/equipment/anomalies", response_model=None,
+         summary="Portfolio ML telemetry anomalies")
+async def equipment_anomalies_portfolio() -> dict[str, Any]:
+    try:
+        reports = await run_in_threadpool(EQUIPMENT.portfolio_anomalies)
+        return {well: rep.to_dict() for well, rep in reports.items()}
+    except galit.EquipmentStorageError as exc:
+        raise _equipment_error(exc) from exc
+
+
+@app.post(
+    "/api/v1/wellbore/hybrid", response_model=None,
+    summary="Hybrid Physics-Informed Wellbore Digital Twin (Residual Learning)",
+    description=("Combines analytical physics (Ramey/Beggs-Brill) with machine learning "
+                 "residual learning from wellhead and bottomhole TMS sensor measurements."),
+)
+async def hybrid_wellbore_endpoint(payload: HybridWellboreRequest) -> dict[str, Any]:
+    try:
+        case = _to_well_case(payload.well)
+        measurements = []
+        if payload.generate_demo_measurements:
+            measurements = galit.generate_realistic_measurements(
+                case.name, case.geometry.depth_m, case.thermal.t_surface_c,
+                case.thermal.geothermal_grad, p_wellhead_pa=case.p_wellhead_pa,
+            )
+        elif payload.measurements:
+            measurements = [
+                galit.WellboreMeasurement(
+                    depth_m=m.depth_m, temperature_c=m.temperature_c,
+                    pressure_pa=m.pressure_pa, sensor_type=m.sensor_type,
+                ) for m in payload.measurements
+            ]
+
+        result = await run_in_threadpool(
+            galit.calculate_hybrid_profiles,
+            case.name, case.geometry, case.rate, case.fluid, case.thermal, case.wax,
+            case.p_wellhead_pa, measurements,
+        )
+        return result.to_dict()
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
 
 
 @app.post(

@@ -1,0 +1,42 @@
+Date : 2026-10-22 19:52:56
+Directory : c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit
+Total : 14 files,  884 codes, 0 comments, 100 blanks, all 984 lines
+
+Languages
++------------+------------+------------+------------+------------+------------+
+| language   | files      | code       | comment    | blank      | total      |
++------------+------------+------------+------------+------------+------------+
+| JSON       |          5 |        613 |          0 |         -4 |        609 |
+| Markdown   |          7 |        246 |          0 |         98 |        344 |
+| PowerShell |          2 |         25 |          0 |          6 |         31 |
++------------+------------+------------+------------+------------+------------+
+
+Directories
++-------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                                                                  | files      | code       | comment    | blank      | total      |
++-------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                                                                     |         14 |        884 |          0 |        100 |        984 |
+| . (Files)                                                                                             |          2 |         25 |          0 |          6 |         31 |
+| reports                                                                                               |         12 |        859 |          0 |         94 |        953 |
++-------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++-------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| filename                                                                                              | language   | code       | comment    | blank      | total      |
++-------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\GALIT-one-pager.md               | Markdown   |         19 |          0 |         16 |         35 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\GALIT-pitch-script.md            | Markdown   |         17 |          0 |         13 |         30 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\final-supplied-parameters.json   | JSON       |         32 |          0 |         -1 |         31 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\final-synthetic-parameters.json  | JSON       |         72 |          0 |         -1 |         71 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\galit-supplied-data-audit.json   | JSON       |        185 |          0 |         -1 |        184 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\galit-supplied-data-audit.md     | Markdown   |         63 |          0 |         21 |         84 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\pilot-data-contract.md           | Markdown   |         25 |          0 |          5 |         30 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\pre-registered-pilot-protocol.md | Markdown   |         24 |          0 |         10 |         34 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\release-manifest.json            | JSON       |        139 |          0 |          0 |        139 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\release-manifest.md              | Markdown   |         35 |          0 |         12 |         47 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\stage4-audit.json                | JSON       |        185 |          0 |         -1 |        184 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\reports\stage4-audit.md                  | Markdown   |         63 |          0 |         21 |         84 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\run_api.ps1                              | PowerShell |          9 |          0 |          0 |          9 |
+| c:\Users\agonc\OneDrive\Desktop\PROGRAMIRING\MevsusLab\Galit\run_demo.ps1                             | PowerShell |         16 |          0 |          6 |         22 |
+| Total                                                                                                 |            |        884 |          0 |        100 |        984 |
++-------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+

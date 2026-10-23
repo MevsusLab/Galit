@@ -308,3 +308,35 @@ class TestForecastEndpoint:
             "holdout_n": -1, "brier_score": .1, "mechanisms": ["wax"],
         }}
         assert client.post("/api/v1/forecast", json=bad_calibration).status_code == 422
+
+
+def test_hybrid_wellbore_api():
+    """Тест эндпоинта гибридного цифрового двойника ствола (Physics + ML Residual)."""
+    # 1. Запрос с автогенерацией промысловых измерений
+    req = {
+        "well": WELL,
+        "generate_demo_measurements": True,
+    }
+    resp = client.post("/api/v1/wellbore/hybrid", json=req)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["well"] == WELL["name"]
+    assert len(data["depths"]) == len(data["temps_physics"]) == len(data["temps_hybrid"])
+    assert len(data["measurements"]) == 2
+    assert "wax_onset_physics_m" in data
+    assert "wax_onset_hybrid_m" in data
+    assert data["temp_residual_max_c"] > 0
+
+    # 2. Запрос с явно заданными замерами
+    req_custom = {
+        "well": WELL,
+        "measurements": [
+            {"depth_m": 0.0, "temperature_c": 28.5, "pressure_pa": 1400000.0, "sensor_type": "surface"},
+            {"depth_m": 2700.0, "temperature_c": 95.0, "pressure_pa": 32000000.0, "sensor_type": "tms_bottomhole"}
+        ],
+        "generate_demo_measurements": False,
+    }
+    resp_custom = client.post("/api/v1/wellbore/hybrid", json=req_custom)
+    assert resp_custom.status_code == 200
+    data_custom = resp_custom.json()
+    assert abs(data_custom["temps_hybrid"][0] - 28.5) < 0.1
